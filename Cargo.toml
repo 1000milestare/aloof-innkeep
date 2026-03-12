@@ -1,0 +1,39 @@
+[package]
+name = "aloof-innkeep"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.11", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dotenv = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+anyhow = "1"
+regex = "1"
+lazy_static = "1.4"
+jsonwebtoken = "9"
+urlencoding = "2"
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# Pin transitive deps for Rust 1.75 compat (harmless on newer versions)
+[dependencies.time]
+version = "=0.3.36"
+
+[dependencies.url]
+version = "=2.4.1"
+
+[dependencies.idna]
+version = "=0.5.0"
+
+[dependencies.indexmap]
+version = "=2.2.6"
+
+[dependencies.native-tls]
+version = "=0.2.11"

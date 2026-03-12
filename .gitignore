@@ -1,0 +1,11 @@
+/target
+.env
+service-account-key.json
+*.log
+*.db
+*.swp
+*.swo
+*~
+.DS_Store
+Cargo.lock
+
