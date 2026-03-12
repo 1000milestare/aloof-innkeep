@@ -36,4 +36,4 @@ version = "=0.5.0"
 version = "=2.2.6"
 
 [dependencies.native-tls]
-version = "=0.2.11"
+version = "=0.2.18"
