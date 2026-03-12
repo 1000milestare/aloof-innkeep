@@ -15,7 +15,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"
 regex = "1"
 lazy_static = "1.4"
-jsonwebtoken = "9"
+jsonwebtoken = "10"
 urlencoding = "2"
 
 [profile.release]
