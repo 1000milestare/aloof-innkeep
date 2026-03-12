@@ -24,7 +24,7 @@ lto = true
 
 # Pin transitive deps for Rust 1.75 compat (harmless on newer versions)
 [dependencies.time]
-version = "=0.3.36"
+version = "=0.3.47"
 
 [dependencies.url]
 version = "=2.4.1"
