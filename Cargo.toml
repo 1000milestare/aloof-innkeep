@@ -27,7 +27,7 @@ lto = true
 version = "=0.3.36"
 
 [dependencies.url]
-version = "=2.4.1"
+version = "=2.5.8"
 
 [dependencies.idna]
 version = "=0.5.0"
