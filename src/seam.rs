@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow};
-use serde_json::json;
 use crate::models::CalendarEvent;
+use anyhow::{anyhow, Result};
+use serde_json::json;
 
 pub struct SeamClient {
     api_key: String,
@@ -15,9 +15,7 @@ impl SeamClient {
     /// The name used for the Seam access code — Airbnb reservation ID when available,
     /// otherwise the Google Calendar event ID.
     fn code_name(event: &CalendarEvent) -> &str {
-        event.booking_id
-            .as_deref()
-            .unwrap_or(&event.reservation_id)
+        event.booking_id.as_deref().unwrap_or(&event.reservation_id)
     }
 
     pub async fn create_access_code(&self, event: &CalendarEvent, code: &str) -> Result<()> {
@@ -43,8 +41,7 @@ impl SeamClient {
             .await?;
 
         let status = response.status();
-        let body: serde_json::Value = response.json().await
-            .unwrap_or_else(|_| json!({}));
+        let body: serde_json::Value = response.json().await.unwrap_or_else(|_| json!({}));
 
         if status.is_success() {
             let code_id = body["access_code"]["access_code_id"]

@@ -45,10 +45,8 @@ impl Config {
             google_service_account_json: std::env::var("GOOGLE_SERVICE_ACCOUNT_JSON")
                 .unwrap_or_else(|_| "./service-account-key.json".to_string()),
             google_calendar_id: std::env::var("GOOGLE_CALENDAR_ID")?,
-            ics_url: std::env::var("ICS_URL")
-                .or_else(|_| std::env::var("AIRBNB_ICS_URL"))?,
-            log_file: std::env::var("LOG_FILE")
-                .unwrap_or_else(|_| "./innkeep.log".to_string()),
+            ics_url: std::env::var("ICS_URL").or_else(|_| std::env::var("AIRBNB_ICS_URL"))?,
+            log_file: std::env::var("LOG_FILE").unwrap_or_else(|_| "./innkeep.log".to_string()),
             log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
             checkin_time: std::env::var("CHECKIN_TIME").unwrap_or_else(|_| "15:00".to_string()),
             checkout_time: std::env::var("CHECKOUT_TIME").unwrap_or_else(|_| "10:00".to_string()),

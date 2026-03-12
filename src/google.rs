@@ -1,8 +1,8 @@
-use anyhow::{Result, anyhow};
-use chrono::{Utc, Local};
-use serde_json::json;
-use crate::models::CalendarEvent;
 use crate::event_filter;
+use crate::models::CalendarEvent;
+use anyhow::{anyhow, Result};
+use chrono::{Local, Utc};
+use serde_json::json;
 
 pub struct GoogleCalendarClient {
     calendar_id: String,
@@ -27,7 +27,10 @@ impl GoogleCalendarClient {
         let access_token = exchange_jwt_for_token(&token).await?;
 
         tracing::info!("Successfully authenticated with Google Calendar API");
-        Ok(GoogleCalendarClient { calendar_id, access_token })
+        Ok(GoogleCalendarClient {
+            calendar_id,
+            access_token,
+        })
     }
 
     /// Fetch all events from Google Calendar and return only those that:
@@ -101,7 +104,11 @@ impl GoogleCalendarClient {
             } else if let Ok(d) = chrono::NaiveDate::parse_from_str(start_str, "%Y-%m-%d") {
                 d
             } else {
-                tracing::warn!("Skipping event with unparseable start \"{}\": {}", start_str, title);
+                tracing::warn!(
+                    "Skipping event with unparseable start \"{}\": {}",
+                    start_str,
+                    title
+                );
                 continue;
             };
 
@@ -150,7 +157,10 @@ impl GoogleCalendarClient {
 
             tracing::debug!(
                 "Accepted: \"{}\" | airbnb_id: {:?} | phone: {:?} | gcal_id: {}",
-                title, airbnb_id, phone, id
+                title,
+                airbnb_id,
+                phone,
+                id
             );
 
             events.push(CalendarEvent {
@@ -168,7 +178,10 @@ impl GoogleCalendarClient {
     }
 
     pub async fn create_event(&self, event: &CalendarEvent) -> Result<String> {
-        tracing::info!("Creating calendar event for reservation: {}", event.reservation_id);
+        tracing::info!(
+            "Creating calendar event for reservation: {}",
+            event.reservation_id
+        );
 
         let client = reqwest::Client::new();
 
@@ -228,7 +241,10 @@ impl GoogleCalendarClient {
         }
 
         let response_body: serde_json::Value = response.json().await?;
-        Ok(response_body["id"].as_str().unwrap_or("unknown").to_string())
+        Ok(response_body["id"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string())
     }
 }
 
@@ -264,7 +280,7 @@ fn unfold_ics_lines(input: &str) -> String {
 }
 
 fn generate_jwt(client_email: &str, private_key: &str) -> Result<String> {
-    use jsonwebtoken::{encode, EncodingKey, Header, Algorithm};
+    use jsonwebtoken::{encode, Algorithm, EncodingKey};
     use serde::{Deserialize, Serialize};
 
     #[derive(Serialize, Deserialize)]
@@ -286,8 +302,10 @@ fn generate_jwt(client_email: &str, private_key: &str) -> Result<String> {
     };
 
     let key = EncodingKey::from_rsa_pem(private_key.as_bytes())?;
-    let mut header = Header::default();
-    header.alg = Algorithm::RS256;
+    let header = jsonwebtoken::Header {
+        alg: Algorithm::RS256,
+        ..Default::default()
+    };
     Ok(encode(&header, &claims, &key)?)
 }
 

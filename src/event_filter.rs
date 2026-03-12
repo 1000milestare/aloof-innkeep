@@ -1,5 +1,5 @@
-use regex::Regex;
 use lazy_static::lazy_static;
+use regex::Regex;
 
 lazy_static! {
     // HTML entities
@@ -30,16 +30,14 @@ pub fn strip_html(input: &str) -> String {
     let s = ICS_ESCAPED_SEMI.replace_all(input, ";");
     let s = HTML_BR_REGEX.replace_all(&s, "\n");
     let s = HTML_TAG_REGEX.replace_all(&s, "");
-    let s = HTML_ENTITY_REGEX.replace_all(&s, |caps: &regex::Captures| {
-        match &caps[0] {
-            "&amp;"  => "&".to_string(),
-            "&lt;"   => "<".to_string(),
-            "&gt;"   => ">".to_string(),
-            "&nbsp;" => " ".to_string(),
-            "&quot;" => "\"".to_string(),
-            "&apos;" => "'".to_string(),
-            other    => other.to_string(),
-        }
+    let s = HTML_ENTITY_REGEX.replace_all(&s, |caps: &regex::Captures| match &caps[0] {
+        "&amp;" => "&".to_string(),
+        "&lt;" => "<".to_string(),
+        "&gt;" => ">".to_string(),
+        "&nbsp;" => " ".to_string(),
+        "&quot;" => "\"".to_string(),
+        "&apos;" => "'".to_string(),
+        other => other.to_string(),
     });
     s.to_string()
 }
@@ -156,17 +154,26 @@ mod tests {
 
     #[test]
     fn test_extract_phone_generic_colon() {
-        assert_eq!(extract_phone_generic_format("Phone: 5839"), Some("5839".to_string()));
+        assert_eq!(
+            extract_phone_generic_format("Phone: 5839"),
+            Some("5839".to_string())
+        );
     }
 
     #[test]
     fn test_extract_phone_generic_lowercase() {
-        assert_eq!(extract_phone_generic_format("phone: 1234"), Some("1234".to_string()));
+        assert_eq!(
+            extract_phone_generic_format("phone: 1234"),
+            Some("1234".to_string())
+        );
     }
 
     #[test]
     fn test_extract_phone_generic_multiline() {
-        assert_eq!(extract_phone_generic_format("Guest: John\nPhone: 5839\nNotes: extra"), Some("5839".to_string()));
+        assert_eq!(
+            extract_phone_generic_format("Guest: John\nPhone: 5839\nNotes: extra"),
+            Some("5839".to_string())
+        );
     }
 
     #[test]
@@ -184,7 +191,10 @@ mod tests {
 
     #[test]
     fn test_extract_phone_own_format_basic() {
-        assert_eq!(extract_phone_own_format("Phone (Last 4): 4500"), Some("4500".to_string()));
+        assert_eq!(
+            extract_phone_own_format("Phone (Last 4): 4500"),
+            Some("4500".to_string())
+        );
     }
 
     #[test]
@@ -197,14 +207,20 @@ mod tests {
     fn test_extract_phone_own_format_not_matched_by_airbnb() {
         // Should fall through airbnb format and be caught by own format
         let desc = "Airbnb Reservation: HM2W4NC5JZ\n\nReservation URL: https://www.airbnb.com/hosting/reservations/details/HM2W4NC5JZ\nPhone (Last 4): 6701";
-        assert_eq!(extract_phone(desc, "Reserved: HM2W4NC5JZ"), Some("6701".to_string()));
+        assert_eq!(
+            extract_phone(desc, "Reserved: HM2W4NC5JZ"),
+            Some("6701".to_string())
+        );
     }
 
     // ============ Title format ============
 
     #[test]
     fn test_extract_phone_from_title_with_dash() {
-        assert_eq!(extract_phone_from_title("Manual Booking - 5839"), Some("5839".to_string()));
+        assert_eq!(
+            extract_phone_from_title("Manual Booking - 5839"),
+            Some("5839".to_string())
+        );
     }
 
     #[test]
@@ -232,12 +248,18 @@ mod tests {
 
     #[test]
     fn test_extract_phone_description_beats_title() {
-        assert_eq!(extract_phone("Phone: 1111", "Event - 2222"), Some("1111".to_string()));
+        assert_eq!(
+            extract_phone("Phone: 1111", "Event - 2222"),
+            Some("1111".to_string())
+        );
     }
 
     #[test]
     fn test_extract_phone_fallback_to_title() {
-        assert_eq!(extract_phone("No phone here", "Booking - 5839"), Some("5839".to_string()));
+        assert_eq!(
+            extract_phone("No phone here", "Booking - 5839"),
+            Some("5839".to_string())
+        );
     }
 
     #[test]
@@ -253,7 +275,10 @@ mod tests {
     #[test]
     fn test_extract_phone_complex_html_description() {
         let desc = r#"Reservation URL: <a href="https://none">n</a>one<br>Phone Number (Last 4 Digits): 2250<br>Notes: andy's wedding guests stay"#;
-        assert_eq!(extract_phone(desc, "Andy's wedding guests stay"), Some("2250".to_string()));
+        assert_eq!(
+            extract_phone(desc, "Andy's wedding guests stay"),
+            Some("2250".to_string())
+        );
     }
 
     #[test]

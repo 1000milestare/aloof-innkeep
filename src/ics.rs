@@ -1,7 +1,7 @@
-use anyhow::{Result, anyhow};
-use chrono::{NaiveDate, NaiveTime, Utc, FixedOffset, TimeZone};
+use crate::models::{CalendarEvent, IcsReservation};
+use anyhow::{anyhow, Result};
+use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
 use regex::Regex;
-use crate::models::{IcsReservation, CalendarEvent};
 
 pub async fn fetch_ics(url: &str) -> Result<String> {
     tracing::info!("Fetching ICS from: {}", url);
@@ -95,7 +95,9 @@ fn parse_vevent(lines: &[&str]) -> Result<IcsReservation> {
 }
 
 fn extract_date(line: &str) -> String {
-    line.find(':').map(|i| line[i + 1..].to_string()).unwrap_or_default()
+    line.find(':')
+        .map(|i| line[i + 1..].to_string())
+        .unwrap_or_default()
 }
 
 pub fn transform_to_calendar_events(
@@ -112,11 +114,13 @@ pub fn transform_to_calendar_events(
         let checkin_naive = chrono::NaiveDateTime::new(res.checkin_date, checkin_time_parsed);
         let checkout_naive = chrono::NaiveDateTime::new(res.checkout_date, checkout_time_parsed);
 
-        let checkin = pdt.from_local_datetime(&checkin_naive)
+        let checkin = pdt
+            .from_local_datetime(&checkin_naive)
             .single()
             .ok_or_else(|| anyhow!("Invalid checkin datetime"))?
             .with_timezone(&Utc);
-        let checkout = pdt.from_local_datetime(&checkout_naive)
+        let checkout = pdt
+            .from_local_datetime(&checkout_naive)
             .single()
             .ok_or_else(|| anyhow!("Invalid checkout datetime"))?
             .with_timezone(&Utc);
@@ -139,6 +143,9 @@ pub fn transform_to_calendar_events(
         });
     }
 
-    tracing::info!("Transformed {} reservations to calendar events", reservations.len());
+    tracing::info!(
+        "Transformed {} reservations to calendar events",
+        reservations.len()
+    );
     Ok(events)
 }

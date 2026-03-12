@@ -1,10 +1,10 @@
-mod models;
-mod logger;
-mod ics;
-mod google;
-mod seam;
-mod event_filter;
 mod commands;
+mod event_filter;
+mod google;
+mod ics;
+mod logger;
+mod models;
+mod seam;
 
 use models::Config;
 use std::env;

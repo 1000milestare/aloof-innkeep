@@ -1,5 +1,5 @@
-use crate::{event_filter, google, seam, models::Config};
 use crate::models::CalendarEvent;
+use crate::{event_filter, google, models::Config, seam};
 
 /// Format checkin/checkout as "YYYY-MM-DD HH:MM PDT" for logging.
 fn fmt_range(event: &CalendarEvent) -> String {
@@ -29,15 +29,14 @@ pub async fn create_codes_command(
     let google_client = google::GoogleCalendarClient::new(
         config.google_calendar_id.clone(),
         &config.google_service_account_json,
-    ).await?;
+    )
+    .await?;
 
     let events = google_client.list_bookable_events().await?;
     tracing::info!("Processing {} bookable future events", events.len());
 
-    let seam_client = seam::SeamClient::new(
-        config.seam_api_key.clone(),
-        config.seam_device_id.clone(),
-    );
+    let seam_client =
+        seam::SeamClient::new(config.seam_api_key.clone(), config.seam_device_id.clone());
 
     for (idx, event) in events.iter().enumerate() {
         let name = event.booking_id.as_deref().unwrap_or(&event.reservation_id);
@@ -47,7 +46,9 @@ pub async fn create_codes_command(
             "{} | gcal_id={} | checkin={} | phone={:?} | desc={:?}",
             label,
             event.reservation_id,
-            event.checkin.with_timezone(&chrono::FixedOffset::west_opt(7*3600).unwrap())
+            event
+                .checkin
+                .with_timezone(&chrono::FixedOffset::west_opt(7 * 3600).unwrap())
                 .format("%Y-%m-%d %H:%M"),
             event_filter::extract_phone(&event.description, &event.title),
             &event.description[..event.description.len().min(200)]
@@ -61,7 +62,12 @@ pub async fn create_codes_command(
         };
 
         if dry_run {
-            tracing::info!("{} - Would create code: {} ({})", label, code, fmt_range(event));
+            tracing::info!(
+                "{} - Would create code: {} ({})",
+                label,
+                code,
+                fmt_range(event)
+            );
             continue;
         }
 
@@ -76,7 +82,12 @@ pub async fn create_codes_command(
         }
 
         match seam_client.create_access_code(event, &code).await {
-            Ok(()) => tracing::info!("{} - ✓ Created code: {} ({})", label, code, fmt_range(event)),
+            Ok(()) => tracing::info!(
+                "{} - ✓ Created code: {} ({})",
+                label,
+                code,
+                fmt_range(event)
+            ),
             Err(e) => tracing::error!("{} - ✗ Failed: {}", label, e),
         }
     }
