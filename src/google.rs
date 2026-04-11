@@ -10,11 +10,17 @@ pub struct GoogleCalendarClient {
 }
 
 impl GoogleCalendarClient {
-    pub async fn new(calendar_id: String, service_account_path: &str) -> Result<Self> {
+    pub async fn new(calendar_id: String, service_account_json: &str) -> Result<Self> {
         tracing::info!("Initializing Google Calendar client");
 
-        let key_file = std::fs::read_to_string(service_account_path)?;
-        let key: serde_json::Value = serde_json::from_str(&key_file)?;
+        // If the value looks like JSON (starts with '{'), treat it as inline JSON.
+        // Otherwise treat it as a file path for backwards compatibility.
+        let json_str = if service_account_json.trim_start().starts_with('{') {
+            service_account_json.to_string()
+        } else {
+            std::fs::read_to_string(service_account_json)?
+        };
+        let key: serde_json::Value = serde_json::from_str(&json_str)?;
 
         let client_email = key["client_email"]
             .as_str()

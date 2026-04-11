@@ -1,0 +1,39 @@
+name: Scheduled Sync
+
+on:
+  schedule:
+    # Run at 8 AM, 2 PM, and 8 PM UTC (1 AM, 7 AM, 1 PM PDT)
+    - cron: '0 8,14,20 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  sync:
+    name: Run Sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Run full sync
+        env:
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
+          AIRBNB_ICS_URL: ${{ secrets.AIRBNB_ICS_URL }}
+          SEAM_API_KEY: ${{ secrets.SEAM_API_KEY }}
+          SEAM_DEVICE_ID: ${{ secrets.SEAM_DEVICE_ID }}
+          LOG_LEVEL: info
+        run: ./target/release/aloof-innkeep
