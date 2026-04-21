@@ -11,7 +11,7 @@ Both phases run by default. Either can be run alone.
 
 ## Setup
 
-**Prerequisites:** Rust 1.75+, a Google Cloud service account with Calendar API access, optionally a Seam workspace.
+**Prerequisites:** Rust (latest stable), a Google Cloud service account with Calendar API access, optionally a Seam workspace.
 
 ### Google Calendar
 
@@ -23,6 +23,7 @@ Both phases run by default. Either can be run alone.
 Copy `.env.example` to `.env` and fill in:
 
 ```
+# File path OR inline JSON (for CI/CD, paste the full JSON as the value)
 GOOGLE_SERVICE_ACCOUNT_JSON=./service-account-key.json
 GOOGLE_CALENDAR_ID=your-calendar-id@group.calendar.google.com
 ICS_URL=https://www.airbnb.com/calendar/ical/...
@@ -49,7 +50,11 @@ cargo build --release
 ./target/release/aloof-innkeep --dry-run    # preview any of the above
 ```
 
-### Cron
+### Scheduled runs (GitHub Actions)
+
+The repo includes a GitHub Actions workflow (`.github/workflows/run.yml`) that runs the full sync 3x daily on a cron schedule. It uses org-level secrets for all credentials. Manual runs are also supported via `workflow_dispatch`.
+
+### Local cron
 
 ```cron
 0 */4 * * * /path/to/aloof-innkeep >> /tmp/innkeep.log 2>&1

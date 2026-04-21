@@ -31,12 +31,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             commands::sync_command(&config, dry_run).await?;
             commands::create_codes_command(&config, dry_run).await?;
         }
+        "audit" => {
+            commands::audit_command(&config).await?;
+        }
         "help" | "--help" => {
             println!("aloof-innkeep — vacation rental calendar sync\n");
             println!("USAGE:");
             println!("  aloof-innkeep                    # Full run: sync + create codes");
             println!("  aloof-innkeep sync               # ICS → Google Calendar only");
             println!("  aloof-innkeep create-codes       # Google Calendar → Seam only");
+            println!("  aloof-innkeep audit              # Read-only sync accuracy check");
             println!("  aloof-innkeep --dry-run          # Preview any of the above");
         }
         _ => {
