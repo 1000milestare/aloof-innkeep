@@ -45,14 +45,20 @@ pub async fn audit_command(config: &Config) -> Result<(), Box<dyn std::error::Er
         let rid = &ics_event.reservation_id;
         match gcal_by_id.remove(rid) {
             None => {
-                tracing::warn!("MISSING in Google Calendar: {} ({} → {})", rid, fmt_dt(&ics_event.checkin), fmt_dt(&ics_event.checkout));
+                tracing::warn!(
+                    "MISSING in Google Calendar: {} ({} → {})",
+                    rid,
+                    fmt_dt(&ics_event.checkin),
+                    fmt_dt(&ics_event.checkout)
+                );
                 issues += 1;
             }
             Some(gcal_event) => {
                 // Compare check-in times (allow 1-minute tolerance for rounding)
                 let checkin_diff = (ics_event.checkin - gcal_event.checkin).num_minutes().abs();
-                let checkout_diff =
-                    (ics_event.checkout - gcal_event.checkout).num_minutes().abs();
+                let checkout_diff = (ics_event.checkout - gcal_event.checkout)
+                    .num_minutes()
+                    .abs();
 
                 if checkin_diff > 1 || checkout_diff > 1 {
                     tracing::warn!(
@@ -65,7 +71,12 @@ pub async fn audit_command(config: &Config) -> Result<(), Box<dyn std::error::Er
                     );
                     issues += 1;
                 } else {
-                    tracing::info!("OK: {} ({} → {})", rid, fmt_dt(&ics_event.checkin), fmt_dt(&ics_event.checkout));
+                    tracing::info!(
+                        "OK: {} ({} → {})",
+                        rid,
+                        fmt_dt(&ics_event.checkin),
+                        fmt_dt(&ics_event.checkout)
+                    );
                 }
             }
         }
@@ -85,7 +96,10 @@ pub async fn audit_command(config: &Config) -> Result<(), Box<dyn std::error::Er
 
     // 6. Summary
     if issues == 0 {
-        tracing::info!("✓ Audit passed — all {} reservations in sync", expected.len());
+        tracing::info!(
+            "✓ Audit passed — all {} reservations in sync",
+            expected.len()
+        );
     } else {
         tracing::warn!(
             "✗ Audit found {} issue(s) across {} reservations",
