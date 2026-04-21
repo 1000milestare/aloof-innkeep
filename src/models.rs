@@ -35,6 +35,9 @@ pub struct Config {
     pub checkout_time: String,
     pub seam_api_key: String,
     pub seam_device_id: String,
+    pub gmail_client_id: String,
+    pub gmail_client_secret: String,
+    pub gmail_refresh_token: String,
 }
 
 impl Config {
@@ -52,6 +55,9 @@ impl Config {
             checkout_time: std::env::var("CHECKOUT_TIME").unwrap_or_else(|_| "10:00".to_string()),
             seam_api_key: std::env::var("SEAM_API_KEY").unwrap_or_default(),
             seam_device_id: std::env::var("SEAM_DEVICE_ID").unwrap_or_default(),
+            gmail_client_id: std::env::var("GMAIL_CLIENT_ID").unwrap_or_default(),
+            gmail_client_secret: std::env::var("GMAIL_CLIENT_SECRET").unwrap_or_default(),
+            gmail_refresh_token: std::env::var("GMAIL_REFRESH_TOKEN").unwrap_or_default(),
         })
     }
 }

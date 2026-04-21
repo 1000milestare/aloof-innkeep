@@ -35,5 +35,8 @@ jobs:
           AIRBNB_ICS_URL: ${{ secrets.AIRBNB_ICS_URL }}
           SEAM_API_KEY: ${{ secrets.SEAM_API_KEY }}
           SEAM_DEVICE_ID: ${{ secrets.SEAM_DEVICE_ID }}
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
           LOG_LEVEL: info
         run: ./target/release/aloof-innkeep

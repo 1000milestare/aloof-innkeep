@@ -1,5 +1,6 @@
 mod commands;
 mod event_filter;
+mod gmail;
 mod google;
 mod ics;
 mod logger;
@@ -34,6 +35,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "audit" => {
             commands::audit_command(&config).await?;
         }
+        "auth-gmail" => {
+            commands::auth_gmail_command(&config).await?;
+        }
         "help" | "--help" => {
             println!("aloof-innkeep — vacation rental calendar sync\n");
             println!("USAGE:");
@@ -41,6 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  aloof-innkeep sync               # ICS → Google Calendar only");
             println!("  aloof-innkeep create-codes       # Google Calendar → Seam only");
             println!("  aloof-innkeep audit              # Read-only sync accuracy check");
+            println!("  aloof-innkeep auth-gmail         # One-time Gmail OAuth setup");
             println!("  aloof-innkeep --dry-run          # Preview any of the above");
         }
         _ => {

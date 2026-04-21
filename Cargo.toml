@@ -17,6 +17,7 @@ regex = "1"
 lazy_static = "1.4"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 urlencoding = "2"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3
