@@ -122,7 +122,10 @@ pub async fn fetch_reservation_times(
             }
         };
 
-        // Try each message until we find one with times
+        // Fetch all messages and pick the latest one (by internalDate) that has valid times.
+        // Gmail API does not document sort order, so we sort explicitly.
+        let mut candidates: Vec<(i64, ReservationTimes)> = Vec::new();
+
         for msg_ref in messages {
             let msg_id = match msg_ref["id"].as_str() {
                 Some(id) => id,
@@ -142,22 +145,29 @@ pub async fn fetch_reservation_times(
 
             let msg: serde_json::Value = msg_resp.json().await?;
 
-            // Extract plaintext body
             let plaintext = extract_plaintext(&msg);
             if plaintext.is_empty() {
                 continue;
             }
 
+            let internal_date = msg["internalDate"]
+                .as_str()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0);
+
             if let Some(times) = parse_times_from_email(&plaintext, rid) {
-                tracing::info!(
-                    "Found times for {}: check-in {}, checkout {}",
-                    rid,
-                    times.checkin_time,
-                    times.checkout_time
-                );
-                results.insert(rid.clone(), times);
-                break;
+                candidates.push((internal_date, times));
             }
+        }
+
+        if let Some((_, times)) = candidates.into_iter().max_by_key(|(ts, _)| *ts) {
+            tracing::info!(
+                "Found times for {}: check-in {}, checkout {}",
+                rid,
+                times.checkin_time,
+                times.checkout_time
+            );
+            results.insert(rid.clone(), times);
         }
 
         if !results.contains_key(rid) {
