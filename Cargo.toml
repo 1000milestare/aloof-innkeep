@@ -15,9 +15,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 anyhow = "1"
 regex = "1"
 lazy_static = "1.4"
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 urlencoding = "2"
-base64 = "0.22"
+base64 = "0.23"
 
 [profile.release]
 opt-level = 3
