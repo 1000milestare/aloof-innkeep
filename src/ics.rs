@@ -1,6 +1,7 @@
 use crate::models::{CalendarEvent, IcsReservation};
+use crate::tz::local_to_utc;
 use anyhow::{anyhow, Result};
-use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone, Utc};
+use chrono::{NaiveDate, NaiveTime};
 use regex::Regex;
 
 pub async fn fetch_ics(url: &str) -> Result<String> {
@@ -107,23 +108,16 @@ pub fn transform_to_calendar_events(
 ) -> Result<Vec<CalendarEvent>> {
     let checkin_time_parsed = NaiveTime::parse_from_str(checkin_time, "%H:%M")?;
     let checkout_time_parsed = NaiveTime::parse_from_str(checkout_time, "%H:%M")?;
-    let pdt = FixedOffset::west_opt(7 * 3600).unwrap();
     let mut events = Vec::new();
 
     for res in &reservations {
         let checkin_naive = chrono::NaiveDateTime::new(res.checkin_date, checkin_time_parsed);
         let checkout_naive = chrono::NaiveDateTime::new(res.checkout_date, checkout_time_parsed);
 
-        let checkin = pdt
-            .from_local_datetime(&checkin_naive)
-            .single()
-            .ok_or_else(|| anyhow!("Invalid checkin datetime"))?
-            .with_timezone(&Utc);
-        let checkout = pdt
-            .from_local_datetime(&checkout_naive)
-            .single()
-            .ok_or_else(|| anyhow!("Invalid checkout datetime"))?
-            .with_timezone(&Utc);
+        let checkin = local_to_utc(checkin_naive)
+            .ok_or_else(|| anyhow!("Invalid or ambiguous checkin datetime (DST transition)"))?;
+        let checkout = local_to_utc(checkout_naive)
+            .ok_or_else(|| anyhow!("Invalid or ambiguous checkout datetime (DST transition)"))?;
 
         let mut description = format!("Reservation: {}", res.reservation_id);
         if let Some(url) = &res.reservation_url {
@@ -148,4 +142,119 @@ pub fn transform_to_calendar_events(
         reservations.len()
     );
     Ok(events)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::{NaiveDate, TimeZone, Utc};
+
+    fn reservation(id: &str, checkin: NaiveDate, checkout: NaiveDate) -> IcsReservation {
+        IcsReservation {
+            reservation_id: id.to_string(),
+            checkin_date: checkin,
+            checkout_date: checkout,
+            reservation_url: None,
+            phone_last_4: None,
+        }
+    }
+
+    #[test]
+    fn standard_time_checkin_is_not_an_hour_early() {
+        // Regression test for the DST bug: a reservation checking in
+        // during PST (standard time, UTC-8) used to be converted with a
+        // hardcoded UTC-7 offset, landing an hour early.
+        let checkin_date = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let checkout_date = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let reservations = vec![reservation("ABC123", checkin_date, checkout_date)];
+
+        let events = transform_to_calendar_events(reservations, "15:00", "10:00").unwrap();
+        assert_eq!(events.len(), 1);
+
+        // 15:00 PST (UTC-8) on Nov 2, 2026 is 23:00 UTC, not 22:00 UTC.
+        assert_eq!(
+            events[0].checkin,
+            Utc.with_ymd_and_hms(2026, 11, 2, 23, 0, 0).unwrap()
+        );
+        // 10:00 PST (UTC-8) on Nov 5, 2026 is 18:00 UTC.
+        assert_eq!(
+            events[0].checkout,
+            Utc.with_ymd_and_hms(2026, 11, 5, 18, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn daylight_time_checkin_uses_utc_minus_7() {
+        let checkin_date = NaiveDate::from_ymd_opt(2026, 7, 15).unwrap();
+        let checkout_date = NaiveDate::from_ymd_opt(2026, 7, 18).unwrap();
+        let reservations = vec![reservation("XYZ789", checkin_date, checkout_date)];
+
+        let events = transform_to_calendar_events(reservations, "15:00", "10:00").unwrap();
+        assert_eq!(events.len(), 1);
+
+        // 15:00 PDT (UTC-7) on Jul 15, 2026 is 22:00 UTC.
+        assert_eq!(
+            events[0].checkin,
+            Utc.with_ymd_and_hms(2026, 7, 15, 22, 0, 0).unwrap()
+        );
+        // 10:00 PDT (UTC-7) on Jul 18, 2026 is 17:00 UTC.
+        assert_eq!(
+            events[0].checkout,
+            Utc.with_ymd_and_hms(2026, 7, 18, 17, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn straddles_the_fall_back_dst_boundary() {
+        // Checkin before the Nov 1, 2026 fall-back (still PDT), checkout
+        // after it (now PST) — makes sure each leg uses its own correct
+        // offset rather than one offset for the whole reservation.
+        let checkin_date = NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
+        let checkout_date = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        let reservations = vec![reservation("STRADDLE1", checkin_date, checkout_date)];
+
+        let events = transform_to_calendar_events(reservations, "15:00", "10:00").unwrap();
+        assert_eq!(events.len(), 1);
+
+        // Checkin: Oct 30 is still PDT (UTC-7).
+        assert_eq!(
+            events[0].checkin,
+            Utc.with_ymd_and_hms(2026, 10, 30, 22, 0, 0).unwrap()
+        );
+        // Checkout: Nov 3 is PST (UTC-8).
+        assert_eq!(
+            events[0].checkout,
+            Utc.with_ymd_and_hms(2026, 11, 3, 18, 0, 0).unwrap()
+        );
+    }
+
+    #[test]
+    fn multiple_reservations_are_each_converted_independently() {
+        let reservations = vec![
+            reservation(
+                "WINTER1",
+                NaiveDate::from_ymd_opt(2026, 1, 10).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 1, 13).unwrap(),
+            ),
+            reservation(
+                "SUMMER1",
+                NaiveDate::from_ymd_opt(2026, 8, 10).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 8, 13).unwrap(),
+            ),
+        ];
+
+        let events = transform_to_calendar_events(reservations, "15:00", "10:00").unwrap();
+        assert_eq!(events.len(), 2);
+
+        // January: PST, UTC-8.
+        assert_eq!(
+            events[0].checkin,
+            Utc.with_ymd_and_hms(2026, 1, 10, 23, 0, 0).unwrap()
+        );
+        // August: PDT, UTC-7.
+        assert_eq!(
+            events[1].checkin,
+            Utc.with_ymd_and_hms(2026, 8, 10, 22, 0, 0).unwrap()
+        );
+    }
 }

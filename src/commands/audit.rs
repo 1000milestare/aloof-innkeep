@@ -1,9 +1,9 @@
+use crate::tz::format_local;
 use crate::{google, ics, models::Config};
 use std::collections::HashMap;
 
 fn fmt_dt(dt: &chrono::DateTime<chrono::Utc>) -> String {
-    let pdt = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
-    dt.with_timezone(&pdt).format("%Y-%m-%d %H:%M").to_string()
+    format_local(dt, "%Y-%m-%d %H:%M")
 }
 
 pub async fn audit_command(config: &Config) -> Result<(), Box<dyn std::error::Error>> {

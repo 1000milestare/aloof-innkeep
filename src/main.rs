@@ -6,6 +6,7 @@ mod ics;
 mod logger;
 mod models;
 mod seam;
+mod tz;
 
 use models::Config;
 use std::env;
