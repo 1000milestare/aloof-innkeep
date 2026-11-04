@@ -1,19 +1,12 @@
 use crate::models::CalendarEvent;
+use crate::tz::{format_local, local_to_utc, LOCAL_TZ};
 use crate::{gmail, google, ics, models::Config};
-use chrono::TimeZone;
 
 fn fmt_range(event: &CalendarEvent) -> String {
-    let pdt = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
     format!(
         "{} → {}",
-        event
-            .checkin
-            .with_timezone(&pdt)
-            .format("%Y-%m-%d %H:%M %Z"),
-        event
-            .checkout
-            .with_timezone(&pdt)
-            .format("%Y-%m-%d %H:%M %Z"),
+        format_local(&event.checkin, "%Y-%m-%d %H:%M %Z"),
+        format_local(&event.checkout, "%Y-%m-%d %H:%M %Z"),
     )
 }
 
@@ -57,29 +50,18 @@ pub async fn sync_command(
                 for event in &mut events {
                     if let Some(times) = times_map.get(&event.reservation_id) {
                         // Re-derive checkin/checkout with the email-specific times
-                        let pdt = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
-                        let checkin_date = event.checkin.with_timezone(&pdt).date_naive();
-                        let checkout_date = event.checkout.with_timezone(&pdt).date_naive();
+                        let checkin_date = event.checkin.with_timezone(&LOCAL_TZ).date_naive();
+                        let checkout_date = event.checkout.with_timezone(&LOCAL_TZ).date_naive();
 
                         if let (Ok(ci_time), Ok(co_time)) = (
                             chrono::NaiveTime::parse_from_str(&times.checkin_time, "%H:%M"),
                             chrono::NaiveTime::parse_from_str(&times.checkout_time, "%H:%M"),
                         ) {
-                            let new_checkin = pdt
-                                .from_local_datetime(&chrono::NaiveDateTime::new(
-                                    checkin_date,
-                                    ci_time,
-                                ))
-                                .single()
-                                .map(|dt| dt.with_timezone(&chrono::Utc));
+                            let new_checkin =
+                                local_to_utc(chrono::NaiveDateTime::new(checkin_date, ci_time));
 
-                            let new_checkout = pdt
-                                .from_local_datetime(&chrono::NaiveDateTime::new(
-                                    checkout_date,
-                                    co_time,
-                                ))
-                                .single()
-                                .map(|dt| dt.with_timezone(&chrono::Utc));
+                            let new_checkout =
+                                local_to_utc(chrono::NaiveDateTime::new(checkout_date, co_time));
 
                             if let (Some(ci), Some(co)) = (new_checkin, new_checkout) {
                                 if ci != event.checkin || co != event.checkout {

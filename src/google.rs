@@ -214,7 +214,7 @@ impl GoogleCalendarClient {
             }
         }
 
-        let ical_uid = format!("{}@airbnb-sync.local", &event.reservation_id);
+        let ical_uid = format!("{}@airbnb-sync.local", event.reservation_id);
         let event_body = json!({
             "summary": &event.title,
             "description": &event.description,
@@ -251,6 +251,55 @@ impl GoogleCalendarClient {
             .as_str()
             .unwrap_or("unknown")
             .to_string())
+    }
+
+    /// Patch an existing Google Calendar event's start/end times in place.
+    /// `gcal_event_id` is the Google Calendar event ID (not the Airbnb
+    /// reservation ID) — e.g. `CalendarEvent.reservation_id` as returned by
+    /// `list_bookable_events`.
+    pub async fn update_event_times(
+        &self,
+        gcal_event_id: &str,
+        checkin: chrono::DateTime<Utc>,
+        checkout: chrono::DateTime<Utc>,
+    ) -> Result<()> {
+        tracing::info!("Updating times for Google Calendar event {}", gcal_event_id);
+
+        let client = reqwest::Client::new();
+        let url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+            urlencoding::encode(&self.calendar_id),
+            urlencoding::encode(gcal_event_id),
+        );
+
+        let patch_body = json!({
+            "start": {
+                "dateTime": checkin.to_rfc3339(),
+                "timeZone": "America/Los_Angeles"
+            },
+            "end": {
+                "dateTime": checkout.to_rfc3339(),
+                "timeZone": "America/Los_Angeles"
+            }
+        });
+
+        let response = client
+            .patch(&url)
+            .header("Authorization", format!("Bearer {}", self.access_token))
+            .json(&patch_body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to update event {}: {}",
+                gcal_event_id,
+                error_text
+            ));
+        }
+
+        Ok(())
     }
 }
 

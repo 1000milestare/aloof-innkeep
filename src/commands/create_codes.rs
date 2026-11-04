@@ -1,13 +1,13 @@
 use crate::models::CalendarEvent;
+use crate::tz::format_local;
 use crate::{event_filter, google, models::Config, seam};
 
-/// Format checkin/checkout as "YYYY-MM-DD HH:MM PDT" for logging.
+/// Format checkin/checkout as "YYYY-MM-DD HH:MM" local time for logging.
 fn fmt_range(event: &CalendarEvent) -> String {
-    let pdt = chrono::FixedOffset::west_opt(7 * 3600).unwrap();
     format!(
         "{} → {}",
-        event.checkin.with_timezone(&pdt).format("%Y-%m-%d %H:%M"),
-        event.checkout.with_timezone(&pdt).format("%Y-%m-%d %H:%M"),
+        format_local(&event.checkin, "%Y-%m-%d %H:%M"),
+        format_local(&event.checkout, "%Y-%m-%d %H:%M"),
     )
 }
 
@@ -46,10 +46,7 @@ pub async fn create_codes_command(
             "{} | gcal_id={} | checkin={} | phone={:?} | desc={:?}",
             label,
             event.reservation_id,
-            event
-                .checkin
-                .with_timezone(&chrono::FixedOffset::west_opt(7 * 3600).unwrap())
-                .format("%Y-%m-%d %H:%M"),
+            format_local(&event.checkin, "%Y-%m-%d %H:%M"),
             event_filter::extract_phone(&event.description, &event.title),
             &event.description[..event.description.len().min(200)]
         );

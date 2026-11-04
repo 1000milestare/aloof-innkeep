@@ -5,7 +5,9 @@ mod google;
 mod ics;
 mod logger;
 mod models;
+mod reconcile;
 mod seam;
+mod tz;
 
 use models::Config;
 use std::env;
@@ -35,6 +37,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "audit" => {
             commands::audit_command(&config).await?;
         }
+        "fix-times" => {
+            let apply = args.iter().any(|arg| arg == "--apply");
+            commands::fix_times_command(&config, apply).await?;
+        }
         "auth-gmail" => {
             commands::auth_gmail_command(&config).await?;
         }
@@ -45,6 +51,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  aloof-innkeep sync               # ICS → Google Calendar only");
             println!("  aloof-innkeep create-codes       # Google Calendar → Seam only");
             println!("  aloof-innkeep audit              # Read-only sync accuracy check");
+            println!("  aloof-innkeep fix-times          # Preview corrections for mismatched GCal times");
+            println!("  aloof-innkeep fix-times --apply  # Actually write those corrections");
             println!("  aloof-innkeep auth-gmail         # One-time Gmail OAuth setup");
             println!("  aloof-innkeep --dry-run          # Preview any of the above");
         }
