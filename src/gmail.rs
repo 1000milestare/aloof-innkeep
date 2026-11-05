@@ -14,6 +14,8 @@ const REDIRECT_URI: &str = "urn:ietf:wg:oauth:2.0:oob";
 pub struct ReservationTimes {
     pub checkin_time: String,  // e.g. "15:00"
     pub checkout_time: String, // e.g. "10:00"
+    /// Guest breakdown from the reminder's GUESTS section, e.g. "5 adults".
+    pub guest_count: Option<String>,
 }
 
 /// Generate the OAuth2 authorization URL for the user to visit.
@@ -266,7 +268,52 @@ fn parse_times_from_email(body: &str, reservation_id: &str) -> Option<Reservatio
     Some(ReservationTimes {
         checkin_time: checkin_24,
         checkout_time: checkout_24,
+        guest_count: parse_guest_count(body),
     })
+}
+
+/// Parse the guest breakdown from the GUESTS section of an Airbnb email, e.g.
+/// ```text
+/// GUESTS
+///
+/// 5 adults
+///
+/// CONFIRMATION CODE
+/// ```
+/// Only a bare `GUESTS` heading is used. `REQUESTED GUESTS` and `ORIGINAL GUESTS`
+/// belong to change requests that may not have been accepted, so they are ignored.
+/// Wrapped lines ("5 guests,\n2 pets") are joined; the section ends at the first
+/// blank line after content or at the next all-caps heading.
+fn parse_guest_count(body: &str) -> Option<String> {
+    let lines: Vec<&str> = body.lines().map(str::trim).collect();
+    let start = lines
+        .iter()
+        .position(|l| l.eq_ignore_ascii_case("GUESTS"))?;
+
+    let mut parts: Vec<&str> = Vec::new();
+    for line in &lines[start + 1..] {
+        if line.is_empty() {
+            if parts.is_empty() {
+                continue;
+            }
+            break;
+        }
+        let is_heading = line.chars().any(|c| c.is_alphabetic())
+            && !line.chars().any(|c| c.is_ascii_digit())
+            && *line == line.to_uppercase();
+        if is_heading {
+            break;
+        }
+        parts.push(line.trim_end_matches(','));
+    }
+
+    let joined = parts.join(", ");
+    // A real breakdown always starts with a number; anything else is stray text.
+    if joined.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        Some(joined)
+    } else {
+        None
+    }
 }
 
 /// Normalize whitespace variants (narrow no-break space, etc.) to regular space.
@@ -425,14 +472,53 @@ GUEST PAID
     }
 
     #[test]
+    fn test_guest_count_from_reminder_template() {
+        let times = parse_times_from_email(REMINDER_FIXTURE, "TESTRES0001").unwrap();
+        assert_eq!(times.guest_count.as_deref(), Some("5 adults"));
+    }
+
+    #[test]
+    fn test_parse_guest_count_joins_wrapped_lines() {
+        let body = "GUESTS\n\n4 adults,\n1 child,\n2 pets\n\nCONFIRMATION CODE\nX";
+        assert_eq!(
+            parse_guest_count(body).as_deref(),
+            Some("4 adults, 1 child, 2 pets")
+        );
+    }
+
+    #[test]
+    fn test_parse_guest_count_stops_at_next_heading() {
+        let body = "GUESTS\n9 adults, 1 infant\nCONFIRMATION CODE\nTESTRES0001";
+        assert_eq!(
+            parse_guest_count(body).as_deref(),
+            Some("9 adults, 1 infant")
+        );
+    }
+
+    #[test]
+    fn test_parse_guest_count_ignores_unconfirmed_change_requests() {
+        let body = "ORIGINAL GUESTS\n5 guests\n\nREQUESTED GUESTS\n13 guests\n\nIf you accept";
+        assert_eq!(parse_guest_count(body), None);
+    }
+
+    #[test]
+    fn test_parse_guest_count_missing_or_non_numeric() {
+        assert_eq!(parse_guest_count("no section here"), None);
+        assert_eq!(parse_guest_count("GUESTS\n\nCONFIRMATION CODE\nX"), None);
+        assert_eq!(parse_guest_count("GUESTS\nsee details in the app\n"), None);
+    }
+
+    #[test]
     fn test_pick_latest_times_prefers_newest_email_regardless_of_order() {
         let original = ReservationTimes {
             checkin_time: "15:00".into(),
             checkout_time: "10:00".into(),
+            guest_count: None,
         };
         let modified = ReservationTimes {
             checkin_time: "13:00".into(),
             checkout_time: "12:00".into(),
+            guest_count: None,
         };
         // The modification arrives later (higher internalDate) but is listed first.
         let picked = pick_latest_times(vec![

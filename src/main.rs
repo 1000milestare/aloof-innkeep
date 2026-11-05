@@ -32,14 +32,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "" | "all" => {
             tracing::info!("Running full sync: ICS → Google → Seam");
             commands::sync_command(&config, dry_run).await?;
+            commands::cancel_command(&config, dry_run).await?;
             commands::create_codes_command(&config, dry_run).await?;
+        }
+        "cancel" => {
+            commands::cancel_command(&config, dry_run).await?;
+        }
+        "seam-audit" => {
+            commands::seam_audit_command(&config).await?;
         }
         "audit" => {
             commands::audit_command(&config).await?;
-        }
-        "fix-times" => {
-            let apply = args.iter().any(|arg| arg == "--apply");
-            commands::fix_times_command(&config, apply).await?;
         }
         "auth-gmail" => {
             commands::auth_gmail_command(&config).await?;
@@ -47,12 +50,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         "help" | "--help" => {
             println!("aloof-innkeep — vacation rental calendar sync\n");
             println!("USAGE:");
-            println!("  aloof-innkeep                    # Full run: sync + create codes");
+            println!("  aloof-innkeep                    # Full run: sync, cancel, create codes");
             println!("  aloof-innkeep sync               # ICS → Google Calendar only");
             println!("  aloof-innkeep create-codes       # Google Calendar → Seam only");
             println!("  aloof-innkeep audit              # Read-only sync accuracy check");
-            println!("  aloof-innkeep fix-times          # Preview corrections for mismatched GCal times");
-            println!("  aloof-innkeep fix-times --apply  # Actually write those corrections");
+            println!("  aloof-innkeep seam-audit         # Read-only lock code check vs calendar");
+            println!("  aloof-innkeep cancel             # Remove events + codes for cancelled reservations");
             println!("  aloof-innkeep auth-gmail         # One-time Gmail OAuth setup");
             println!("  aloof-innkeep --dry-run          # Preview any of the above");
         }

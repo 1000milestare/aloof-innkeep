@@ -10,6 +10,19 @@ fn fmt_range(event: &CalendarEvent) -> String {
     )
 }
 
+/// Add a `Guests:` line to an event description. Idempotent, so re-running with
+/// the same count (or a description that already has one) never duplicates it.
+fn with_guest_count(description: &str, guests: &str) -> String {
+    if description.lines().any(|l| l.starts_with("Guests:")) {
+        return description.to_string();
+    }
+    if description.is_empty() {
+        format!("Guests: {}", guests)
+    } else {
+        format!("{}\nGuests: {}", description, guests)
+    }
+}
+
 pub async fn sync_command(
     config: &Config,
     dry_run: bool,
@@ -49,6 +62,10 @@ pub async fn sync_command(
             Ok(times_map) => {
                 for event in &mut events {
                     if let Some(times) = times_map.get(&event.reservation_id) {
+                        if let Some(guests) = &times.guest_count {
+                            event.description = with_guest_count(&event.description, guests);
+                        }
+
                         // Re-derive checkin/checkout with the email-specific times
                         let checkin_date = event.checkin.with_timezone(&LOCAL_TZ).date_naive();
                         let checkout_date = event.checkout.with_timezone(&LOCAL_TZ).date_naive();
@@ -116,4 +133,37 @@ pub async fn sync_command(
 
     tracing::info!("✓ Sync complete — {} events processed", events.len());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guest_count_is_appended_once() {
+        let d = with_guest_count("Reservation: ABC", "5 adults");
+        assert_eq!(d, "Reservation: ABC\nGuests: 5 adults");
+        assert_eq!(with_guest_count(&d, "5 adults"), d);
+    }
+
+    #[test]
+    fn guest_count_on_empty_description() {
+        assert_eq!(with_guest_count("", "2 adults"), "Guests: 2 adults");
+    }
+
+    #[test]
+    fn guest_line_does_not_disturb_reservation_id_or_phone_extraction() {
+        let desc = with_guest_count(
+            "Reservation URL: https://www.airbnb.com/hosting/reservations/details/HMABC12345\nPhone Number (Last 4 Digits): 2250",
+            "5 adults",
+        );
+        assert_eq!(
+            crate::event_filter::extract_airbnb_id(&desc).as_deref(),
+            Some("HMABC12345")
+        );
+        assert_eq!(
+            crate::event_filter::extract_phone(&desc, "Reserved").as_deref(),
+            Some("2250")
+        );
+    }
 }

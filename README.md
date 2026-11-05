@@ -7,8 +7,10 @@ Syncs a vacation rental ICS calendar to Google Calendar and creates Seam smart l
 1. **sync** — Fetches the Airbnb ICS feed, parses reservations, creates timed Google Calendar events (all-day → check-in/checkout with configurable times). If Gmail is configured, overrides default times with per-reservation times from Airbnb confirmation emails.
 2. **create-codes** — Reads Google Calendar, finds bookable future events, extracts the guest's phone last-4, creates a time-bound Seam access code.
 3. **audit** — Read-only comparison of ICS feed vs Google Calendar. Reports missing, extra, and time-mismatched events.
+4. **cancel** — Removes the calendar event and lock code for any Airbnb reservation that has dropped out of the ICS feed. Runs between `sync` and `create-codes` in a full run. Refuses to act on an empty feed or more than 5 cancellations in one run; only events carrying an Airbnb reservation ID are touched, and only the lock code named after that reservation is deleted.
+5. **seam-audit** — Read-only comparison of every code on the lock against the calendar: missing codes, drifted PIN/window, and orphan codes (not started, no calendar event).
 
-Both `sync` and `create-codes` run by default. Any command can be run alone.
+A full run does `sync`, `cancel`, then `create-codes`. Any command can be run alone.
 
 ## Setup
 
@@ -61,6 +63,8 @@ cargo build --release
 ./target/release/aloof-innkeep sync         # ICS → Google only
 ./target/release/aloof-innkeep create-codes # Google → Seam only
 ./target/release/aloof-innkeep audit        # read-only sync accuracy check
+./target/release/aloof-innkeep seam-audit   # read-only lock code check
+./target/release/aloof-innkeep cancel --dry-run  # preview cancellation cleanup
 ./target/release/aloof-innkeep auth-gmail   # one-time Gmail OAuth setup
 ./target/release/aloof-innkeep --dry-run    # preview any of the above
 ```
@@ -91,5 +95,7 @@ src/
     ├── sync.rs           # ICS → Google (with optional Gmail time overrides)
     ├── create_codes.rs   # Google → Seam
     ├── audit.rs          # Read-only sync accuracy check
+    ├── cancel.rs         # Remove events + codes for cancelled reservations
+    ├── seam_audit.rs     # Read-only lock code check
     └── auth_gmail.rs     # One-time Gmail OAuth flow
 ```

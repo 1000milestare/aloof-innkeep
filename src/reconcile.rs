@@ -91,6 +91,72 @@ pub fn reconcile<'a>(
     }
 }
 
+/// Most cancellations one run is allowed to act on. A feed outage or a parse
+/// regression looks exactly like "everything was cancelled", so anything above
+/// this is refused and left for a human.
+pub const MAX_CANCELLATIONS_PER_RUN: usize = 5;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CancellationGuard {
+    /// The ICS feed returned no reservations at all while the calendar has some.
+    EmptyFeed { calendar_reservations: usize },
+    /// More cancellations than `MAX_CANCELLATIONS_PER_RUN`.
+    TooMany { found: usize },
+}
+
+impl std::fmt::Display for CancellationGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CancellationGuard::EmptyFeed {
+                calendar_reservations,
+            } => write!(
+                f,
+                "ICS feed has no reservations but the calendar has {}; assuming a feed problem",
+                calendar_reservations
+            ),
+            CancellationGuard::TooMany { found } => write!(
+                f,
+                "{} cancellations found (limit {}); refusing to act automatically",
+                found, MAX_CANCELLATIONS_PER_RUN
+            ),
+        }
+    }
+}
+
+/// Calendar events for Airbnb reservations that are no longer in the ICS feed.
+///
+/// Only events carrying an Airbnb reservation ID (`booking_id`) are candidates,
+/// so manually entered events (e.g. other platforms) are never treated as
+/// cancellations. `gcal` is expected to hold future events only.
+pub fn plan_cancellations<'a>(
+    expected: &[CalendarEvent],
+    gcal: &'a [CalendarEvent],
+) -> Result<Vec<&'a CalendarEvent>, CancellationGuard> {
+    let live: std::collections::HashSet<&str> =
+        expected.iter().map(|e| e.reservation_id.as_str()).collect();
+
+    let airbnb_events: Vec<&CalendarEvent> =
+        gcal.iter().filter(|e| e.booking_id.is_some()).collect();
+
+    let cancelled: Vec<&CalendarEvent> = airbnb_events
+        .iter()
+        .copied()
+        .filter(|e| !live.contains(e.booking_id.as_deref().unwrap_or("")))
+        .collect();
+
+    if expected.is_empty() && !airbnb_events.is_empty() {
+        return Err(CancellationGuard::EmptyFeed {
+            calendar_reservations: airbnb_events.len(),
+        });
+    }
+    if cancelled.len() > MAX_CANCELLATIONS_PER_RUN {
+        return Err(CancellationGuard::TooMany {
+            found: cancelled.len(),
+        });
+    }
+    Ok(cancelled)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,5 +260,74 @@ mod tests {
         let report = reconcile(&expected, &gcal);
         assert_eq!(report.ok.len(), 1);
         assert!(report.mismatched.is_empty());
+    }
+
+    #[test]
+    fn cancellation_is_calendar_event_missing_from_feed() {
+        let expected = vec![event("KEEP1", 23, 18)];
+        let gcal = vec![
+            gcal_event("g1", "KEEP1", 23, 18),
+            gcal_event("g2", "GONE1", 23, 18),
+        ];
+        let cancelled = plan_cancellations(&expected, &gcal).unwrap();
+        assert_eq!(cancelled.len(), 1);
+        assert_eq!(cancelled[0].reservation_id, "g2");
+    }
+
+    #[test]
+    fn manual_events_without_airbnb_id_are_never_cancelled() {
+        let expected = vec![event("KEEP1", 23, 18)];
+        let mut manual = gcal_event("g9", "X", 23, 18);
+        manual.booking_id = None;
+        let gcal = vec![gcal_event("g1", "KEEP1", 23, 18), manual];
+        assert!(plan_cancellations(&expected, &gcal).unwrap().is_empty());
+    }
+
+    #[test]
+    fn empty_feed_is_refused() {
+        let gcal = vec![gcal_event("g1", "KEEP1", 23, 18)];
+        assert_eq!(
+            plan_cancellations(&[], &gcal).unwrap_err(),
+            CancellationGuard::EmptyFeed {
+                calendar_reservations: 1
+            }
+        );
+    }
+
+    #[test]
+    fn empty_feed_and_empty_calendar_is_fine() {
+        assert!(plan_cancellations(&[], &[]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn too_many_cancellations_is_refused() {
+        let expected = vec![event("KEEP1", 23, 18)];
+        let mut gcal = vec![gcal_event("g0", "KEEP1", 23, 18)];
+        for i in 0..=MAX_CANCELLATIONS_PER_RUN {
+            gcal.push(gcal_event(
+                &format!("g{}", i + 1),
+                &format!("GONE{}", i),
+                23,
+                18,
+            ));
+        }
+        assert_eq!(
+            plan_cancellations(&expected, &gcal).unwrap_err(),
+            CancellationGuard::TooMany {
+                found: MAX_CANCELLATIONS_PER_RUN + 1
+            }
+        );
+    }
+
+    #[test]
+    fn exactly_the_limit_is_allowed() {
+        let expected = vec![event("KEEP1", 23, 18)];
+        let gcal: Vec<CalendarEvent> = (0..MAX_CANCELLATIONS_PER_RUN)
+            .map(|i| gcal_event(&format!("g{}", i), &format!("GONE{}", i), 23, 18))
+            .collect();
+        assert_eq!(
+            plan_cancellations(&expected, &gcal).unwrap().len(),
+            MAX_CANCELLATIONS_PER_RUN
+        );
     }
 }
