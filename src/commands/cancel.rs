@@ -41,7 +41,7 @@ pub async fn cancel_command(
         Ok(c) => c,
         Err(guard) => {
             // Not fatal: later steps in a full run should still go ahead.
-            tracing::error!("✗ Skipping cancellations: {}", guard);
+            crate::fail!("✗ Skipping cancellations: {}", guard);
             return Ok(());
         }
     };
@@ -79,7 +79,7 @@ pub async fn cancel_command(
                         match seam_client.delete_access_code(&code.access_code_id).await {
                             Ok(()) => tracing::info!("{} - ✓ Deleted lock code", name),
                             Err(e) => {
-                                tracing::error!("{} - ✗ Could not delete lock code: {}", name, e);
+                                crate::fail!("{} - ✗ Could not delete lock code: {}", name, e);
                                 code_ok = false;
                             }
                         }
@@ -87,7 +87,7 @@ pub async fn cancel_command(
                 }
                 Ok(None) => tracing::info!("{} - No lock code on device", name),
                 Err(e) => {
-                    tracing::error!("{} - ✗ Could not read lock codes: {}", name, e);
+                    crate::fail!("{} - ✗ Could not read lock codes: {}", name, e);
                     code_ok = false;
                 }
             }
@@ -104,7 +104,7 @@ pub async fn cancel_command(
             if dry_run {
                 tracing::info!("{} - Would delete cleaning buffer", name);
             } else if let Err(e) = google_client.delete_cleaning_buffer(airbnb_id).await {
-                tracing::error!("{} - ✗ Could not delete cleaning buffer: {}", name, e);
+                crate::fail!("{} - ✗ Could not delete cleaning buffer: {}", name, e);
                 tracing::warn!("{} - Keeping calendar event so the next run retries", name);
                 continue;
             } else {
@@ -118,7 +118,7 @@ pub async fn cancel_command(
         }
         match google_client.delete_event(&event.reservation_id).await {
             Ok(()) => tracing::info!("{} - ✓ Deleted calendar event ({})", name, when),
-            Err(e) => tracing::error!("{} - ✗ Could not delete calendar event: {}", name, e),
+            Err(e) => crate::fail!("{} - ✗ Could not delete calendar event: {}", name, e),
         }
     }
 

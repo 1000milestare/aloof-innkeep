@@ -64,7 +64,7 @@ pub async fn create_codes_command(
         let existing = match seam_client.find_existing_code(event).await {
             Ok(existing) => existing,
             Err(e) => {
-                tracing::error!(
+                crate::fail!(
                     "{} - ✗ Could not read existing codes, skipping: {}",
                     label,
                     e
@@ -95,7 +95,7 @@ pub async fn create_codes_command(
                         code,
                         fmt_range(event)
                     ),
-                    Err(e) => tracing::error!("{} - ✗ Failed: {}", label, e),
+                    Err(e) => crate::fail!("{} - ✗ Failed: {}", label, e),
                 }
             }
 
@@ -129,7 +129,7 @@ pub async fn create_codes_command(
                     Ok(()) => {
                         tracing::info!("{} - ✓ Updated code ({}, {})", label, code_note, times_note)
                     }
-                    Err(e) => tracing::error!("{} - ✗ Update failed: {}", label, e),
+                    Err(e) => crate::fail!("{} - ✗ Update failed: {}", label, e),
                 }
             }
         }

@@ -105,6 +105,10 @@ pub async fn sync_command(
         tracing::debug!("Gmail not configured — using default check-in/checkout times");
     }
 
+    for conflict in crate::buffer::turnover_conflicts(&events, config.cleaning_buffer_hours) {
+        tracing::warn!("Turnover conflict: {}", conflict);
+    }
+
     if dry_run {
         for (i, event) in events.iter().enumerate() {
             tracing::info!(
@@ -128,7 +132,7 @@ pub async fn sync_command(
         let label = format!("[{}/{}] {}", i + 1, events.len(), event.reservation_id);
         match google_client.create_event(event).await {
             Ok(_) => tracing::info!("{}: ✓ {}", label, fmt_range(event)),
-            Err(e) => tracing::error!("{}: ✗ {}", label, e),
+            Err(e) => crate::fail!("{}: ✗ {}", label, e),
         }
 
         if let (Some(airbnb_id), Some(buffer)) = (
@@ -144,7 +148,7 @@ pub async fn sync_command(
                     label,
                     format_local(&buffer.checkout, "%Y-%m-%d %H:%M %Z")
                 ),
-                Err(e) => tracing::error!("{}: ✗ cleaning buffer: {}", label, e),
+                Err(e) => crate::fail!("{}: ✗ cleaning buffer: {}", label, e),
             }
         }
     }

@@ -40,6 +40,35 @@ pub fn cleaning_buffer_for(booking: &CalendarEvent, hours: u32) -> Option<Calend
     })
 }
 
+/// Describe every booking whose cleaning buffer would run into another booking's
+/// check-in. Such a turnover cannot be cleaned in time, so it needs a human
+/// decision. Only bookings with an Airbnb ID are compared.
+pub fn turnover_conflicts(bookings: &[CalendarEvent], hours: u32) -> Vec<String> {
+    if hours == 0 {
+        return Vec::new();
+    }
+    let window = Duration::hours(i64::from(hours));
+    let mut out = Vec::new();
+    for b in bookings.iter().filter(|b| b.booking_id.is_some()) {
+        let buffer_end = b.checkout + window;
+        for o in bookings.iter().filter(|o| o.booking_id.is_some()) {
+            if o.reservation_id == b.reservation_id {
+                continue;
+            }
+            if o.checkin >= b.checkout && o.checkin < buffer_end {
+                out.push(format!(
+                    "{} cleaning buffer runs until {}, but {} checks in at {}",
+                    b.booking_id.as_deref().unwrap_or(&b.reservation_id),
+                    b.checkout + window,
+                    o.booking_id.as_deref().unwrap_or(&o.reservation_id),
+                    o.checkin,
+                ));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +113,33 @@ mod tests {
             buffer_ical_uid("HMABC12345"),
             "HMABC12345-buffer@airbnb-sync.local"
         );
+    }
+
+    #[test]
+    fn turnover_conflict_when_next_checkin_is_inside_buffer() {
+        let a = booking();
+        let mut b = booking();
+        b.reservation_id = "HMNEXT0002".into();
+        b.booking_id = Some("HMNEXT0002".into());
+        // Next guest checks in 2h after A's checkout, inside the 3h buffer.
+        b.checkin = a.checkout + Duration::hours(2);
+        assert_eq!(turnover_conflicts(&[a, b], 3).len(), 1);
+    }
+
+    #[test]
+    fn no_conflict_when_next_checkin_is_after_buffer() {
+        let a = booking();
+        let mut b = booking();
+        b.reservation_id = "HMNEXT0002".into();
+        b.booking_id = Some("HMNEXT0002".into());
+        b.checkin = a.checkout + Duration::hours(5);
+        assert!(turnover_conflicts(&[a, b], 3).is_empty());
+    }
+
+    #[test]
+    fn no_conflicts_when_buffer_disabled_or_no_bookings() {
+        let a = booking();
+        assert!(turnover_conflicts(std::slice::from_ref(&a), 0).is_empty());
+        assert!(turnover_conflicts(&[a], 3).is_empty());
     }
 }
