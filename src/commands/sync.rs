@@ -1,3 +1,4 @@
+use crate::buffer::cleaning_buffer_for;
 use crate::models::CalendarEvent;
 use crate::tz::{format_local, local_to_utc, LOCAL_TZ};
 use crate::{gmail, google, ics, models::Config};
@@ -128,6 +129,23 @@ pub async fn sync_command(
         match google_client.create_event(event).await {
             Ok(_) => tracing::info!("{}: ✓ {}", label, fmt_range(event)),
             Err(e) => tracing::error!("{}: ✗ {}", label, e),
+        }
+
+        if let (Some(airbnb_id), Some(buffer)) = (
+            event.booking_id.as_deref(),
+            cleaning_buffer_for(event, config.cleaning_buffer_hours),
+        ) {
+            match google_client
+                .upsert_cleaning_buffer(airbnb_id, &buffer)
+                .await
+            {
+                Ok(_) => tracing::info!(
+                    "{}: ✓ cleaning buffer until {}",
+                    label,
+                    format_local(&buffer.checkout, "%Y-%m-%d %H:%M %Z")
+                ),
+                Err(e) => tracing::error!("{}: ✗ cleaning buffer: {}", label, e),
+            }
         }
     }
 

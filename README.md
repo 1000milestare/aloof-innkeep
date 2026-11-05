@@ -4,10 +4,10 @@ Syncs a vacation rental ICS calendar to Google Calendar and creates Seam smart l
 
 ## How it works
 
-1. **sync** — Fetches the Airbnb ICS feed, parses reservations, creates timed Google Calendar events (all-day → check-in/checkout with configurable times). If Gmail is configured, overrides default times with per-reservation times from Airbnb confirmation emails.
+1. **sync** — Fetches the Airbnb ICS feed, parses reservations, creates timed Google Calendar events (all-day → check-in/checkout with configurable times). If Gmail is configured, overrides default times with per-reservation times from Airbnb confirmation emails. For each booking it also creates a separate "Cleaning buffer" event from checkout for `CLEANING_BUFFER_HOURS` (default 3). The buffer blocks the slot for other booking platforms but is never used as a guest access window and never gets a lock code.
 2. **create-codes** — Reads Google Calendar, finds bookable future events, extracts the guest's phone last-4, creates a time-bound Seam access code.
 3. **audit** — Read-only comparison of ICS feed vs Google Calendar. Reports missing, extra, and time-mismatched events.
-4. **cancel** — Removes the calendar event and lock code for any Airbnb reservation that has dropped out of the ICS feed. Runs between `sync` and `create-codes` in a full run. Refuses to act on an empty feed or more than 5 cancellations in one run; only events carrying an Airbnb reservation ID are touched, and only the lock code named after that reservation is deleted.
+4. **cancel** — Removes the calendar event, its cleaning buffer, and the lock code for any Airbnb reservation that has dropped out of the ICS feed. Runs between `sync` and `create-codes` in a full run. Refuses to act on an empty feed or more than 5 cancellations in one run; only events carrying an Airbnb reservation ID are touched, and only the lock code named after that reservation is deleted.
 5. **seam-audit** — Read-only comparison of every code on the lock against the calendar: missing codes, drifted PIN/window, and orphan codes (not started, no calendar event).
 
 A full run does `sync`, `cancel`, then `create-codes`. Any command can be run alone.
@@ -71,12 +71,12 @@ cargo build --release
 
 ### Scheduled runs (GitHub Actions)
 
-The repo includes a GitHub Actions workflow (`.github/workflows/run.yml`) that runs the full sync 3x daily on a cron schedule. It uses org-level secrets for all credentials. Manual runs are also supported via `workflow_dispatch`.
+The repo includes a GitHub Actions workflow (`.github/workflows/run.yml`) that runs the full sync every 3 hours (8x daily) on a cron schedule. The cleaning buffer length can be changed with the `CLEANING_BUFFER_HOURS` repository variable (default 3). It uses org-level secrets for all credentials. Manual runs are also supported via `workflow_dispatch`.
 
 ### Local cron
 
 ```cron
-0 */4 * * * /path/to/aloof-innkeep >> /tmp/innkeep.log 2>&1
+0 */3 * * * /path/to/aloof-innkeep >> /tmp/innkeep.log 2>&1
 ```
 
 ## Project structure

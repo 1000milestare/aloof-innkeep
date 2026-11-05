@@ -1,7 +1,8 @@
+use crate::buffer::buffer_ical_uid;
 use crate::event_filter;
 use crate::models::CalendarEvent;
 use anyhow::{anyhow, Result};
-use chrono::{Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use serde_json::json;
 
 pub struct GoogleCalendarClient {
@@ -183,50 +184,49 @@ impl GoogleCalendarClient {
         Ok(events)
     }
 
-    pub async fn create_event(&self, event: &CalendarEvent) -> Result<String> {
-        tracing::info!(
-            "Creating calendar event for reservation: {}",
-            event.reservation_id
-        );
-
-        let client = reqwest::Client::new();
-
-        // Check if event already exists
-        let search_url = format!(
-            "https://www.googleapis.com/calendar/v3/calendars/{}/events?q={}",
+    /// Find the first non-deleted event with exactly this iCalUID, if any.
+    async fn find_event_by_ical_uid(&self, ical_uid: &str) -> Result<Option<serde_json::Value>> {
+        let url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events?iCalUID={}",
             urlencoding::encode(&self.calendar_id),
-            urlencoding::encode(&event.reservation_id)
+            urlencoding::encode(ical_uid),
         );
 
-        let search_response = client
-            .get(&search_url)
-            .header("Authorization", format!("Bearer {}", self.access_token))
+        let response = reqwest::Client::new()
+            .get(&url)
+            .bearer_auth(&self.access_token)
             .send()
             .await?;
 
-        if search_response.status().is_success() {
-            let search_body: serde_json::Value = search_response.json().await?;
-            if let Some(items) = search_body.get("items").and_then(|v| v.as_array()) {
-                if !items.is_empty() {
-                    tracing::info!("Event {} already exists, skipping", event.reservation_id);
-                    return Ok(items[0]["id"].as_str().unwrap_or("existing").to_string());
-                }
-            }
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to look up event {}: {}",
+                ical_uid,
+                error_text
+            ));
         }
 
-        let ical_uid = format!("{}@airbnb-sync.local", event.reservation_id);
+        let body: serde_json::Value = response.json().await?;
+        Ok(body["items"]
+            .as_array()
+            .and_then(|items| items.first().cloned()))
+    }
+
+    async fn insert_event(
+        &self,
+        title: &str,
+        description: &str,
+        start: DateTime<Utc>,
+        end: DateTime<Utc>,
+        ical_uid: &str,
+    ) -> Result<String> {
         let event_body = json!({
-            "summary": &event.title,
-            "description": &event.description,
-            "iCalUID": &ical_uid,
-            "start": {
-                "dateTime": event.checkin.to_rfc3339(),
-                "timeZone": "America/Los_Angeles"
-            },
-            "end": {
-                "dateTime": event.checkout.to_rfc3339(),
-                "timeZone": "America/Los_Angeles"
-            }
+            "summary": title,
+            "description": description,
+            "iCalUID": ical_uid,
+            "start": time_body(start),
+            "end": time_body(end),
         });
 
         let url = format!(
@@ -234,7 +234,7 @@ impl GoogleCalendarClient {
             urlencoding::encode(&self.calendar_id)
         );
 
-        let response = client
+        let response = reqwest::Client::new()
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.access_token))
             .json(&event_body)
@@ -251,6 +251,95 @@ impl GoogleCalendarClient {
             .as_str()
             .unwrap_or("unknown")
             .to_string())
+    }
+
+    pub async fn create_event(&self, event: &CalendarEvent) -> Result<String> {
+        tracing::info!(
+            "Creating calendar event for reservation: {}",
+            event.reservation_id
+        );
+
+        let ical_uid = format!("{}@airbnb-sync.local", event.reservation_id);
+        if let Some(existing) = self.find_event_by_ical_uid(&ical_uid).await? {
+            tracing::info!("Event {} already exists, skipping", event.reservation_id);
+            return Ok(existing["id"].as_str().unwrap_or("existing").to_string());
+        }
+
+        self.insert_event(
+            &event.title,
+            &event.description,
+            event.checkin,
+            event.checkout,
+            &ical_uid,
+        )
+        .await
+    }
+
+    /// Create or align the post-checkout cleaning buffer for one booking. The
+    /// buffer's times are the source of truth, so an existing buffer is patched
+    /// if they have drifted (for example after a checkout-time change).
+    pub async fn upsert_cleaning_buffer(
+        &self,
+        airbnb_id: &str,
+        buffer: &CalendarEvent,
+    ) -> Result<String> {
+        let ical_uid = buffer_ical_uid(airbnb_id);
+
+        let Some(existing) = self.find_event_by_ical_uid(&ical_uid).await? else {
+            return self
+                .insert_event(
+                    &buffer.title,
+                    &buffer.description,
+                    buffer.checkin,
+                    buffer.checkout,
+                    &ical_uid,
+                )
+                .await;
+        };
+
+        let id = existing["id"].as_str().unwrap_or("").to_string();
+        if time_matches(&existing["start"], buffer.checkin)
+            && time_matches(&existing["end"], buffer.checkout)
+        {
+            return Ok(id);
+        }
+
+        tracing::info!("Updating cleaning buffer times for {}", airbnb_id);
+        let url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+            urlencoding::encode(&self.calendar_id),
+            urlencoding::encode(&id),
+        );
+        let body = json!({
+            "start": time_body(buffer.checkin),
+            "end": time_body(buffer.checkout),
+        });
+
+        let response = reqwest::Client::new()
+            .patch(&url)
+            .bearer_auth(&self.access_token)
+            .json(&body)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(anyhow!("Failed to update cleaning buffer: {}", error_text));
+        }
+        Ok(id)
+    }
+
+    /// Remove the cleaning buffer for a booking, if one exists. Missing is fine.
+    pub async fn delete_cleaning_buffer(&self, airbnb_id: &str) -> Result<()> {
+        if let Some(existing) = self
+            .find_event_by_ical_uid(&buffer_ical_uid(airbnb_id))
+            .await?
+        {
+            if let Some(id) = existing["id"].as_str() {
+                self.delete_event(id).await?;
+            }
+        }
+        Ok(())
     }
 
     /// Delete a Google Calendar event by its Google event ID (not the Airbnb
@@ -284,6 +373,24 @@ impl GoogleCalendarClient {
             text
         ))
     }
+}
+
+/// Google Calendar time object for an instant, in the calendar's zone.
+fn time_body(t: DateTime<Utc>) -> serde_json::Value {
+    json!({
+        "dateTime": t.to_rfc3339(),
+        "timeZone": "America/Los_Angeles"
+    })
+}
+
+/// True when an event's start/end object is within the reconcile tolerance
+/// of the expected instant.
+fn time_matches(time: &serde_json::Value, expected: DateTime<Utc>) -> bool {
+    time["dateTime"]
+        .as_str()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| (dt.with_timezone(&Utc) - expected).num_minutes().abs() <= 1)
+        .unwrap_or(false)
 }
 
 /// Unescape ICS text property values returned by the Google Calendar API.

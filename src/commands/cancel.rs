@@ -98,6 +98,20 @@ pub async fn cancel_command(
             continue;
         }
 
+        if let Some(airbnb_id) = event.booking_id.as_deref() {
+            // Buffer goes first: if it can't be removed we keep the booking,
+            // so the next run still sees the cancellation and retries.
+            if dry_run {
+                tracing::info!("{} - Would delete cleaning buffer", name);
+            } else if let Err(e) = google_client.delete_cleaning_buffer(airbnb_id).await {
+                tracing::error!("{} - ✗ Could not delete cleaning buffer: {}", name, e);
+                tracing::warn!("{} - Keeping calendar event so the next run retries", name);
+                continue;
+            } else {
+                tracing::info!("{} - ✓ Deleted cleaning buffer", name);
+            }
+        }
+
         if dry_run {
             tracing::info!("{} - Would delete calendar event ({})", name, when);
             continue;
