@@ -33,6 +33,8 @@ pub struct Config {
     pub log_level: String,
     pub checkin_time: String,
     pub checkout_time: String,
+    /// Hours of cleaning buffer after checkout; 0 disables the buffer.
+    pub cleaning_buffer_hours: u32,
     pub seam_api_key: String,
     pub seam_device_id: String,
     pub gmail_client_id: String,
@@ -53,6 +55,10 @@ impl Config {
             log_level: std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
             checkin_time: std::env::var("CHECKIN_TIME").unwrap_or_else(|_| "15:00".to_string()),
             checkout_time: std::env::var("CHECKOUT_TIME").unwrap_or_else(|_| "10:00".to_string()),
+            cleaning_buffer_hours: std::env::var("CLEANING_BUFFER_HOURS")
+                .ok()
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(3),
             seam_api_key: std::env::var("SEAM_API_KEY").unwrap_or_default(),
             seam_device_id: std::env::var("SEAM_DEVICE_ID").unwrap_or_default(),
             gmail_client_id: std::env::var("GMAIL_CLIENT_ID").unwrap_or_default(),

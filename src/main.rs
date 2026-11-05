@@ -1,3 +1,4 @@
+mod buffer;
 mod commands;
 mod event_filter;
 mod gmail;
