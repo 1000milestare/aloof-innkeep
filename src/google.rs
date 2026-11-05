@@ -253,53 +253,36 @@ impl GoogleCalendarClient {
             .to_string())
     }
 
-    /// Patch an existing Google Calendar event's start/end times in place.
-    /// `gcal_event_id` is the Google Calendar event ID (not the Airbnb
-    /// reservation ID) — e.g. `CalendarEvent.reservation_id` as returned by
-    /// `list_bookable_events`.
-    pub async fn update_event_times(
-        &self,
-        gcal_event_id: &str,
-        checkin: chrono::DateTime<Utc>,
-        checkout: chrono::DateTime<Utc>,
-    ) -> Result<()> {
-        tracing::info!("Updating times for Google Calendar event {}", gcal_event_id);
+    /// Delete a Google Calendar event by its Google event ID (not the Airbnb
+    /// reservation ID). A 404/410 (already gone) counts as success so retries
+    /// after a partial failure are safe.
+    pub async fn delete_event(&self, gcal_event_id: &str) -> Result<()> {
+        tracing::info!("Deleting Google Calendar event {}", gcal_event_id);
 
-        let client = reqwest::Client::new();
         let url = format!(
             "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
             urlencoding::encode(&self.calendar_id),
             urlencoding::encode(gcal_event_id),
         );
 
-        let patch_body = json!({
-            "start": {
-                "dateTime": checkin.to_rfc3339(),
-                "timeZone": "America/Los_Angeles"
-            },
-            "end": {
-                "dateTime": checkout.to_rfc3339(),
-                "timeZone": "America/Los_Angeles"
-            }
-        });
-
-        let response = client
-            .patch(&url)
-            .header("Authorization", format!("Bearer {}", self.access_token))
-            .json(&patch_body)
+        let response = reqwest::Client::new()
+            .delete(&url)
+            .bearer_auth(&self.access_token)
             .send()
             .await?;
 
-        if !response.status().is_success() {
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(anyhow!(
-                "Failed to update event {}: {}",
-                gcal_event_id,
-                error_text
-            ));
+        let status = response.status();
+        if status.is_success() || status.as_u16() == 404 || status.as_u16() == 410 {
+            return Ok(());
         }
 
-        Ok(())
+        let text = response.text().await.unwrap_or_default();
+        Err(anyhow!(
+            "Failed to delete event {} ({}): {}",
+            gcal_event_id,
+            status,
+            text
+        ))
     }
 }
 
