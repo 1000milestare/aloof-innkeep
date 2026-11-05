@@ -1,7 +1,9 @@
 use crate::buffer::cleaning_buffer_for;
+use crate::google::BookingSync;
 use crate::models::CalendarEvent;
 use crate::tz::{format_local, local_to_utc, LOCAL_TZ};
 use crate::{gmail, google, ics, models::Config};
+use std::collections::HashSet;
 
 fn fmt_range(event: &CalendarEvent) -> String {
     format!(
@@ -48,6 +50,10 @@ pub async fn sync_command(
         && !config.gmail_client_secret.is_empty()
         && !config.gmail_refresh_token.is_empty();
 
+    // Reservations whose times came from a reminder email this run. Only these
+    // may update existing calendar events; default times never overwrite one.
+    let mut reminder_times: HashSet<String> = HashSet::new();
+
     if gmail_configured {
         tracing::info!("Gmail configured — looking up per-reservation times");
         let res_ids: Vec<String> = events.iter().map(|e| e.reservation_id.clone()).collect();
@@ -92,6 +98,7 @@ pub async fn sync_command(
                                 }
                                 event.checkin = ci;
                                 event.checkout = co;
+                                reminder_times.insert(event.reservation_id.clone());
                             }
                         }
                     }
@@ -130,8 +137,11 @@ pub async fn sync_command(
 
     for (i, event) in events.iter().enumerate() {
         let label = format!("[{}/{}] {}", i + 1, events.len(), event.reservation_id);
-        match google_client.create_event(event).await {
-            Ok(_) => tracing::info!("{}: ✓ {}", label, fmt_range(event)),
+        let authoritative = reminder_times.contains(&event.reservation_id);
+        match google_client.sync_booking_event(event, authoritative).await {
+            Ok(BookingSync::Created) => tracing::info!("{}: ✓ created {}", label, fmt_range(event)),
+            Ok(BookingSync::Updated) => tracing::info!("{}: ✓ updated {}", label, fmt_range(event)),
+            Ok(BookingSync::Unchanged) => tracing::debug!("{}: unchanged", label),
             Err(e) => crate::fail!("{}: ✗ {}", label, e),
         }
 
