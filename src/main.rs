@@ -19,6 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
 
     logger::init_logger(&config.log_file, &config.log_level)?;
+    config.warn_missing();
 
     let command = args.get(1).map(|s| s.as_str()).unwrap_or("");
     let dry_run = args.iter().any(|arg| arg == "--dry-run");
@@ -63,6 +64,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         _ => {
             eprintln!("Unknown command: {}. Use 'help' for usage.", command);
         }
+    }
+
+    let failures = logger::failure_count();
+    if failures > 0 {
+        tracing::error!("✗ Run finished with {} failure(s)", failures);
+        std::process::exit(1);
     }
 
     Ok(())

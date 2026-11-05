@@ -43,6 +43,40 @@ pub struct Config {
 }
 
 impl Config {
+    /// Warn about optional integrations that are only partly configured. A run
+    /// still succeeds without them, but silently using default times or skipping
+    /// lock codes is easy to miss in a scheduled job.
+    pub fn warn_missing(&self) {
+        let seam = [
+            ("SEAM_API_KEY", &self.seam_api_key),
+            ("SEAM_DEVICE_ID", &self.seam_device_id),
+        ];
+        let gmail = [
+            ("GMAIL_CLIENT_ID", &self.gmail_client_id),
+            ("GMAIL_CLIENT_SECRET", &self.gmail_client_secret),
+            ("GMAIL_REFRESH_TOKEN", &self.gmail_refresh_token),
+        ];
+        for (group, vars) in [
+            ("Seam lock codes", seam.as_slice()),
+            ("Gmail check-in times", gmail.as_slice()),
+        ] {
+            let missing: Vec<&str> = vars
+                .iter()
+                .filter(|(_, v)| v.is_empty())
+                .map(|(k, _)| *k)
+                .collect();
+            if !missing.is_empty() && missing.len() < vars.len() {
+                tracing::warn!(
+                    "{} partly configured — missing {}",
+                    group,
+                    missing.join(", ")
+                );
+            } else if missing.len() == vars.len() {
+                tracing::warn!("{} not configured — feature disabled", group);
+            }
+        }
+    }
+
     pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
         dotenv::dotenv().ok();
 
