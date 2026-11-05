@@ -160,7 +160,7 @@ pub async fn fetch_reservation_times(
             }
         }
 
-        if let Some((_, times)) = candidates.into_iter().max_by_key(|(ts, _)| *ts) {
+        if let Some(times) = pick_latest_times(candidates) {
             tracing::info!(
                 "Found times for {}: check-in {}, checkout {}",
                 rid,
@@ -181,6 +181,16 @@ pub async fn fetch_reservation_times(
         reservation_ids.len()
     );
     Ok(results)
+}
+
+/// Choose the most recent set of times. Airbnb sends a new reminder/confirmation
+/// email whenever a reservation's check-in or checkout is modified, so the email
+/// with the newest `internalDate` (milliseconds since epoch) is authoritative.
+fn pick_latest_times(candidates: Vec<(i64, ReservationTimes)>) -> Option<ReservationTimes> {
+    candidates
+        .into_iter()
+        .max_by_key(|(ts, _)| *ts)
+        .map(|(_, times)| times)
 }
 
 /// Extract the plaintext body from a Gmail message (handles multipart).
@@ -344,5 +354,98 @@ HM4S2ZTZZX
         let body = "Check-in Checkout\nFri, Apr 17 Sun, Apr 19\n3:00 PM 10:00 AM\nCONFIRMATION CODE\nHM4S2ZTZZX";
         let result = parse_times_from_email(body, "WRONGID");
         assert!(result.is_none());
+    }
+
+    /// Plaintext body of an Airbnb "Reservation reminder" email, after Gmail has
+    /// decoded the quoted-printable transfer encoding. Structure matches the real
+    /// template (blank padding lines around the table, U+202F before AM/PM); guest
+    /// name, dates and confirmation code are fabricated.
+    const REMINDER_FIXTURE: &str = "\
+%opentrack%
+
+GUEST ARRIVES WEDNESDAY, SEP 23.
+
+If you haven\u{2019}t already, reach out to Test Guest to send
+directions and coordinate check-in time.
+
+Test Guest
+
+Hi Host, we're coming for the Example Faire!
+
+BAYVIEW MANSE MIDWAY BETWEEN NAPA & SAN FRANCISCO
+
+Entire home/apt
+
+Check-in      Checkout
+             \n\
+Wed, Sep 23   Mon, Sep 28
+             \n\
+3:00\u{202F}PM       10:00\u{202F}AM
+
+GUESTS
+
+5 adults
+
+CONFIRMATION CODE
+TESTRES0001
+
+GUEST PAID
+";
+
+    #[test]
+    fn test_parse_times_from_reminder_template() {
+        let times = parse_times_from_email(REMINDER_FIXTURE, "TESTRES0001").unwrap();
+        assert_eq!(times.checkin_time, "15:00");
+        assert_eq!(times.checkout_time, "10:00");
+    }
+
+    #[test]
+    fn test_parse_times_from_reminder_modified_checkin_and_checkout() {
+        // A host-modified reservation: the same template, with non-default times.
+        // Checkout at 12:00 PM must map to noon (12:00), not midnight.
+        let body = REMINDER_FIXTURE
+            .replace("3:00\u{202F}PM", "1:00\u{202F}PM")
+            .replace("10:00\u{202F}AM", "12:00\u{202F}PM");
+        let times = parse_times_from_email(&body, "TESTRES0001").unwrap();
+        assert_eq!(times.checkin_time, "13:00");
+        assert_eq!(times.checkout_time, "12:00");
+    }
+
+    #[test]
+    fn test_parse_times_reminder_for_other_reservation_is_ignored() {
+        assert!(parse_times_from_email(REMINDER_FIXTURE, "TESTRES9999").is_none());
+    }
+
+    #[test]
+    fn test_parse_times_reminder_without_table_returns_none() {
+        // A message that mentions the reservation but has no check-in table
+        // (e.g. a plain guest message) must not produce times.
+        let body = "Hi, can I check in early?\nCONFIRMATION CODE\nTESTRES0001\n";
+        assert!(parse_times_from_email(body, "TESTRES0001").is_none());
+    }
+
+    #[test]
+    fn test_pick_latest_times_prefers_newest_email_regardless_of_order() {
+        let original = ReservationTimes {
+            checkin_time: "15:00".into(),
+            checkout_time: "10:00".into(),
+        };
+        let modified = ReservationTimes {
+            checkin_time: "13:00".into(),
+            checkout_time: "12:00".into(),
+        };
+        // The modification arrives later (higher internalDate) but is listed first.
+        let picked = pick_latest_times(vec![
+            (1_789_600_000_000, modified.clone()),
+            (1_789_500_000_000, original),
+        ])
+        .unwrap();
+        assert_eq!(picked.checkin_time, modified.checkin_time);
+        assert_eq!(picked.checkout_time, modified.checkout_time);
+    }
+
+    #[test]
+    fn test_pick_latest_times_empty_is_none() {
+        assert!(pick_latest_times(vec![]).is_none());
     }
 }
