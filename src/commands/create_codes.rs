@@ -58,34 +58,80 @@ pub async fn create_codes_command(
             continue;
         };
 
-        if dry_run {
-            tracing::info!(
-                "{} - Would create code: {} ({})",
-                label,
-                code,
-                fmt_range(event)
-            );
-            continue;
-        }
-
-        // Check if code already exists (by Airbnb ID or Google event ID)
-        match seam_client.code_exists(event).await {
-            Ok(true) => {
-                tracing::info!("{} - Code already exists, skipping", label);
+        // Read-only lookup, so it runs in dry-run too and the preview is accurate.
+        // If we can't read the device state we don't know whether to create or
+        // update, so skip this event rather than guess.
+        let existing = match seam_client.find_existing_code(event).await {
+            Ok(existing) => existing,
+            Err(e) => {
+                tracing::error!(
+                    "{} - ✗ Could not read existing codes, skipping: {}",
+                    label,
+                    e
+                );
                 continue;
             }
-            Ok(false) => {}
-            Err(e) => tracing::warn!("{} - Could not check existing codes: {}", label, e),
-        }
+        };
 
-        match seam_client.create_access_code(event, &code).await {
-            Ok(()) => tracing::info!(
-                "{} - ✓ Created code: {} ({})",
-                label,
-                code,
-                fmt_range(event)
-            ),
-            Err(e) => tracing::error!("{} - ✗ Failed: {}", label, e),
+        match seam::plan_code_action(existing.as_ref(), event, &code) {
+            seam::CodeAction::Unchanged => {
+                tracing::info!("{} - Code up to date, skipping", label);
+            }
+
+            seam::CodeAction::Create => {
+                if dry_run {
+                    tracing::info!(
+                        "{} - Would create code: {} ({})",
+                        label,
+                        code,
+                        fmt_range(event)
+                    );
+                    continue;
+                }
+                match seam_client.create_access_code(event, &code).await {
+                    Ok(()) => tracing::info!(
+                        "{} - ✓ Created code: {} ({})",
+                        label,
+                        code,
+                        fmt_range(event)
+                    ),
+                    Err(e) => tracing::error!("{} - ✗ Failed: {}", label, e),
+                }
+            }
+
+            seam::CodeAction::Update {
+                access_code_id,
+                new_code,
+                new_times,
+            } => {
+                let times_note = match new_times {
+                    Some(_) => format!("times -> {}", fmt_range(event)),
+                    None => "times unchanged".to_string(),
+                };
+                let code_note = match &new_code {
+                    Some(c) => format!("PIN -> {}", c),
+                    None => "PIN unchanged".to_string(),
+                };
+
+                if dry_run {
+                    tracing::info!(
+                        "{} - Would update code ({}, {})",
+                        label,
+                        code_note,
+                        times_note
+                    );
+                    continue;
+                }
+                match seam_client
+                    .update_access_code(&access_code_id, new_code.as_deref(), new_times)
+                    .await
+                {
+                    Ok(()) => {
+                        tracing::info!("{} - ✓ Updated code ({}, {})", label, code_note, times_note)
+                    }
+                    Err(e) => tracing::error!("{} - ✗ Update failed: {}", label, e),
+                }
+            }
         }
     }
 
