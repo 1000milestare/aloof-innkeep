@@ -146,7 +146,12 @@ pub async fn fetch_kv_mail(cfg: &KvConfig) -> Result<Vec<Mail>> {
 pub async fn collect(config: &Config, reservation_ids: &[String]) -> Result<Vec<Mail>> {
     let mut mails = Vec::new();
     if let Some(kv) = KvConfig::from_config(config) {
-        mails.extend(fetch_kv_mail(&kv).await?);
+        let stored = fetch_kv_mail(&kv).await?;
+        tracing::info!(
+            "Read {} stored mail message(s) from Cloudflare KV",
+            stored.len()
+        );
+        mails.extend(stored);
     }
     if gmail_configured(config) {
         mails.extend(
