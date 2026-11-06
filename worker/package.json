@@ -1,0 +1,13 @@
+{
+  "name": "aloof-innkeep-commands",
+  "private": true,
+  "scripts": {
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0",
+    "typescript": "^5.6.0",
+    "@cloudflare/workers-types": "^4.20260101.0"
+  }
+}

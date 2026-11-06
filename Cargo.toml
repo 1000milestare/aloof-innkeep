@@ -19,6 +19,7 @@ jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 urlencoding = "2"
 base64 = "0.22"
 chrono-tz = "0.10.4"
+mailparse = "0.18.0"
 
 [profile.release]
 opt-level = 3

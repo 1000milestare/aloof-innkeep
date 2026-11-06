@@ -9,3 +9,5 @@ service-account-key.json
 .DS_Store
 Cargo.lock
 
+node_modules/
+worker/wrangler.local.toml

@@ -1,7 +1,7 @@
+use crate::mailbox::{bare_address, Mail};
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use regex::Regex;
-use std::collections::HashMap;
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GMAIL_API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -80,113 +80,36 @@ async fn get_access_token(
         .ok_or_else(|| anyhow!("No access_token in response"))
 }
 
-/// Search Gmail for Airbnb reservation emails and extract check-in/checkout times.
-/// Returns a map of reservation_id -> ReservationTimes.
-pub async fn fetch_reservation_times(
+/// Airbnb reminder emails and owner command emails for these reservations, as
+/// `Mail`. Parsing happens in `mailbox`, shared with the KV store.
+pub async fn fetch_mail_for_reservations(
     client_id: &str,
     client_secret: &str,
     refresh_token: &str,
+    command_sender: &str,
     reservation_ids: &[String],
-) -> Result<HashMap<String, ReservationTimes>> {
+) -> Result<Vec<Mail>> {
     let access_token = get_access_token(client_id, client_secret, refresh_token).await?;
     let client = reqwest::Client::new();
-    let mut results = HashMap::new();
+    let mut out = Vec::new();
 
     for rid in reservation_ids {
-        tracing::debug!("Searching Gmail for reservation {}", rid);
-
-        // Search for Airbnb emails containing this reservation ID
-        let query = format!("from:automated@airbnb.com {}", rid);
-        let search_url = format!(
-            "{}/messages?q={}&maxResults=5",
-            GMAIL_API,
-            urlencoding::encode(&query),
-        );
-
-        let resp = client
-            .get(&search_url)
-            .bearer_auth(&access_token)
-            .send()
-            .await?;
-
-        if !resp.status().is_success() {
-            let err = resp.text().await.unwrap_or_default();
-            tracing::warn!("Gmail search failed for {}: {}", rid, err);
-            continue;
-        }
-
-        let body: serde_json::Value = resp.json().await?;
-        let messages = match body["messages"].as_array() {
-            Some(msgs) if !msgs.is_empty() => msgs,
-            _ => {
-                tracing::debug!("No Gmail messages found for {}", rid);
-                continue;
-            }
-        };
-
-        // Fetch all messages and pick the latest one (by internalDate) that has valid times.
-        // Gmail API does not document sort order, so we sort explicitly.
-        let mut candidates: Vec<(i64, ReservationTimes)> = Vec::new();
-
-        for msg_ref in messages {
-            let msg_id = match msg_ref["id"].as_str() {
-                Some(id) => id,
-                None => continue,
-            };
-
-            let msg_url = format!("{}/messages/{}?format=full", GMAIL_API, msg_id);
-            let msg_resp = client
-                .get(&msg_url)
-                .bearer_auth(&access_token)
-                .send()
-                .await?;
-
-            if !msg_resp.status().is_success() {
-                continue;
-            }
-
-            let msg: serde_json::Value = msg_resp.json().await?;
-
-            let plaintext = extract_plaintext(&msg);
-            if plaintext.is_empty() {
-                continue;
-            }
-
-            let internal_date = msg["internalDate"]
-                .as_str()
-                .and_then(|s| s.parse::<i64>().ok())
-                .unwrap_or(0);
-
-            if let Some(times) = parse_times_from_email(&plaintext, rid) {
-                candidates.push((internal_date, times));
-            }
-        }
-
-        if let Some(times) = pick_latest_times(candidates) {
-            tracing::info!(
-                "Found times for {}: check-in {}, checkout {}",
-                rid,
-                times.checkin_time,
-                times.checkout_time
-            );
-            results.insert(rid.clone(), times);
-        }
-
-        if !results.contains_key(rid) {
-            tracing::debug!("Could not extract times for {} from any email", rid);
+        out.extend(search_messages(&client, &access_token, "from:automated@airbnb.com", rid).await);
+        let senders: Vec<String> = command_sender
+            .split(',')
+            .map(bare_address)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !senders.is_empty() {
+            let query = format!("from:({})", senders.join(" OR "));
+            out.extend(search_messages(&client, &access_token, &query, rid).await);
         }
     }
-
-    tracing::info!(
-        "Gmail: found check-in/out times for {}/{} reservations",
-        results.len(),
-        reservation_ids.len()
-    );
-    Ok(results)
+    Ok(out)
 }
 
 /// Reservation code from an Airbnb cancellation subject, e.g.
-/// "Canceled: Reservation HMFWJXSQRM for Sep 25–28, 2025" → "HMFWJXSQRM".
+/// "Canceled: Reservation HMEXAMPLE01 for Sep 25–28, 2025" → "HMEXAMPLE01".
 /// Returns None for anything else (reminders, confirmations, other Airbnb mail).
 pub fn parse_cancellation_subject(subject: &str) -> Option<String> {
     let re = Regex::new(r"^Canceled: Reservation ([A-Z0-9]{8,12}) for ").ok()?;
@@ -269,14 +192,179 @@ pub async fn fetch_cancelled_reservation_ids(
     Ok(ids)
 }
 
-/// Choose the most recent set of times. Airbnb sends a new reminder/confirmation
-/// email whenever a reservation's check-in or checkout is modified, so the email
-/// with the newest `internalDate` (milliseconds since epoch) is authoritative.
-fn pick_latest_times(candidates: Vec<(i64, ReservationTimes)>) -> Option<ReservationTimes> {
-    candidates
-        .into_iter()
+/// Messages matching `prefix` plus the reservation ID, as `Mail`. Errors are logged
+/// and yield nothing, so one failed lookup falls back to defaults, not a failed run.
+async fn search_messages(
+    client: &reqwest::Client,
+    token: &str,
+    prefix: &str,
+    rid: &str,
+) -> Vec<Mail> {
+    let query = format!("{} {}", prefix, rid);
+    let search_url = format!(
+        "{}/messages?q={}&maxResults=5",
+        GMAIL_API,
+        urlencoding::encode(&query),
+    );
+
+    let body: serde_json::Value = match client.get(&search_url).bearer_auth(token).send().await {
+        Ok(resp) if resp.status().is_success() => match resp.json().await {
+            Ok(body) => body,
+            Err(_) => return Vec::new(),
+        },
+        Ok(resp) => {
+            let err = resp.text().await.unwrap_or_default();
+            tracing::warn!("Gmail search failed for {}: {}", rid, err);
+            return Vec::new();
+        }
+        Err(e) => {
+            tracing::warn!("Gmail search failed for {}: {}", rid, e);
+            return Vec::new();
+        }
+    };
+
+    let mut out = Vec::new();
+    for msg_ref in body["messages"].as_array().cloned().unwrap_or_default() {
+        let Some(msg_id) = msg_ref["id"].as_str() else {
+            continue;
+        };
+        let url = format!("{}/messages/{}?format=full", GMAIL_API, msg_id);
+        let Ok(resp) = client.get(&url).bearer_auth(token).send().await else {
+            continue;
+        };
+        if !resp.status().is_success() {
+            continue;
+        }
+        let Ok(msg) = resp.json::<serde_json::Value>().await else {
+            continue;
+        };
+        let text = extract_plaintext(&msg);
+        if text.is_empty() {
+            continue;
+        }
+        out.push(Mail {
+            from: bare_address(&gmail_header(&msg, "From")),
+            subject: gmail_header(&msg, "Subject"),
+            received_ms: msg["internalDate"]
+                .as_str()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0),
+            text,
+        });
+    }
+    out
+}
+
+/// A header value from a Gmail API message payload.
+fn gmail_header(msg: &serde_json::Value, name: &str) -> String {
+    msg["payload"]["headers"]
+        .as_array()
+        .and_then(|hs| {
+            hs.iter().find(|h| {
+                h["name"]
+                    .as_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
+        })
+        .and_then(|h| h["value"].as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
+/// A check-in or checkout change written by the owner, e.g.
+/// "checkout HMEXAMPLE01 13:00" or "checkin HMEXAMPLE01 3:00 PM".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TimeCommand {
+    CheckIn(String),  // "HH:MM"
+    CheckOut(String), // "HH:MM"
+}
+
+/// Every well-formed command line for this reservation in a message body. Lines
+/// that don't match the grammar exactly are ignored, so ordinary mail can't
+/// change times by accident.
+pub fn parse_time_commands(body: &str, reservation_id: &str) -> Vec<TimeCommand> {
+    let pattern = format!(
+        r"(?i)^\s*(checkin|check-in|checkout|check-out)\s+{}\s+(\d{{1,2}}:\d{{2}}(?:\s*[ap]m)?)\s*$",
+        regex::escape(reservation_id)
+    );
+    let Ok(re) = Regex::new(&pattern) else {
+        return Vec::new();
+    };
+
+    body.lines()
+        .filter_map(|line| {
+            let caps = re.captures(line)?;
+            let time = parse_clock(&caps[2])?;
+            match caps[1].to_lowercase().as_str() {
+                "checkin" | "check-in" => Some(TimeCommand::CheckIn(time)),
+                _ => Some(TimeCommand::CheckOut(time)),
+            }
+        })
+        .collect()
+}
+
+/// "13:00", "3:00 PM", "12:30am" → "HH:MM" (24-hour). None if the time is not real.
+fn parse_clock(s: &str) -> Option<String> {
+    let upper = s.trim().to_uppercase();
+    let (h, m) = if upper.ends_with("AM") || upper.ends_with("PM") {
+        let converted = to_24h(&upper)?;
+        let (h, m) = converted.split_once(':')?;
+        (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)
+    } else {
+        let (h, m) = upper.split_once(':')?;
+        (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?)
+    };
+    chrono::NaiveTime::from_hms_opt(h, m, 0).map(|t| t.format("%H:%M").to_string())
+}
+
+/// Combine reminder emails and owner commands into one set of times. Each field
+/// takes its newest value from either source, so a command sent after a reminder
+/// wins, and a later reminder wins over an older command. A field with no source
+/// uses the config default. The guest count comes from the newest reminder.
+pub(crate) fn resolve_times(
+    reminders: Vec<(i64, ReservationTimes)>,
+    commands: Vec<(i64, TimeCommand)>,
+    default_checkin: &str,
+    default_checkout: &str,
+) -> Option<ReservationTimes> {
+    if reminders.is_empty() && commands.is_empty() {
+        return None;
+    }
+
+    let guest_count = reminders
+        .iter()
         .max_by_key(|(ts, _)| *ts)
-        .map(|(_, times)| times)
+        .and_then(|(_, t)| t.guest_count.clone());
+
+    let checkin = newest(
+        reminders
+            .iter()
+            .map(|(ts, t)| (*ts, t.checkin_time.clone()))
+            .chain(commands.iter().filter_map(|(ts, c)| match c {
+                TimeCommand::CheckIn(t) => Some((*ts, t.clone())),
+                TimeCommand::CheckOut(_) => None,
+            })),
+    );
+    let checkout = newest(
+        reminders
+            .iter()
+            .map(|(ts, t)| (*ts, t.checkout_time.clone()))
+            .chain(commands.iter().filter_map(|(ts, c)| match c {
+                TimeCommand::CheckOut(t) => Some((*ts, t.clone())),
+                TimeCommand::CheckIn(_) => None,
+            })),
+    );
+
+    Some(ReservationTimes {
+        checkin_time: checkin.unwrap_or_else(|| default_checkin.to_string()),
+        checkout_time: checkout.unwrap_or_else(|| default_checkout.to_string()),
+        guest_count,
+    })
+}
+
+/// The value with the largest timestamp.
+fn newest(items: impl Iterator<Item = (i64, String)>) -> Option<String> {
+    items.max_by_key(|(ts, _)| *ts).map(|(_, t)| t)
 }
 
 /// Extract the plaintext body from a Gmail message (handles multipart).
@@ -329,7 +417,7 @@ fn decode_part(part: &serde_json::Value) -> Option<String> {
 /// Fri, Apr 17   Sun, Apr 19
 /// 3:00 PM       10:00 AM
 /// ```
-fn parse_times_from_email(body: &str, reservation_id: &str) -> Option<ReservationTimes> {
+pub(crate) fn parse_times_from_email(body: &str, reservation_id: &str) -> Option<ReservationTimes> {
     // Verify this email is about the right reservation
     if !body.contains(reservation_id) {
         return None;
@@ -434,6 +522,68 @@ fn to_24h(time_str: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn times(checkin: &str, checkout: &str) -> ReservationTimes {
+        ReservationTimes {
+            checkin_time: checkin.into(),
+            checkout_time: checkout.into(),
+            guest_count: None,
+        }
+    }
+
+    #[test]
+    fn command_accepts_24h_and_12h_forms() {
+        let body = "checkout HMTEST12345 13:00\ncheckin HMTEST12345 3:00 PM\n";
+        assert_eq!(
+            parse_time_commands(body, "HMTEST12345"),
+            vec![
+                TimeCommand::CheckOut("13:00".into()),
+                TimeCommand::CheckIn("15:00".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn command_ignores_other_reservations_and_prose() {
+        let body = "checkout HMOTHER999 13:00\nPlease can we check out later?\ncheckout HMTEST12345 13:00 extra";
+        assert!(parse_time_commands(body, "HMTEST12345").is_empty());
+    }
+
+    #[test]
+    fn command_rejects_impossible_times() {
+        assert!(parse_time_commands("checkout HMTEST12345 13:00 PM", "HMTEST12345").is_empty());
+        assert!(parse_time_commands("checkout HMTEST12345 25:00", "HMTEST12345").is_empty());
+    }
+
+    #[test]
+    fn newer_command_beats_older_reminder() {
+        let reminders = vec![(100, times("15:00", "10:00"))];
+        let commands = vec![(200, TimeCommand::CheckOut("13:00".into()))];
+        let r = resolve_times(reminders, commands, "15:00", "10:00").unwrap();
+        assert_eq!(r.checkin_time, "15:00");
+        assert_eq!(r.checkout_time, "13:00");
+    }
+
+    #[test]
+    fn newer_reminder_beats_older_command() {
+        let reminders = vec![(300, times("15:00", "12:00"))];
+        let commands = vec![(200, TimeCommand::CheckOut("13:00".into()))];
+        let r = resolve_times(reminders, commands, "15:00", "10:00").unwrap();
+        assert_eq!(r.checkout_time, "12:00");
+    }
+
+    #[test]
+    fn command_only_fills_the_other_field_from_defaults() {
+        let commands = vec![(200, TimeCommand::CheckIn("13:00".into()))];
+        let r = resolve_times(Vec::new(), commands, "15:00", "10:00").unwrap();
+        assert_eq!(r.checkin_time, "13:00");
+        assert_eq!(r.checkout_time, "10:00");
+    }
+
+    #[test]
+    fn nothing_to_resolve_is_none() {
+        assert!(resolve_times(Vec::new(), Vec::new(), "15:00", "10:00").is_none());
+    }
+
     #[test]
     fn cancellation_subject_yields_code() {
         assert_eq!(
@@ -536,7 +686,7 @@ Test Guest
 
 Hi Host, we're coming for the Example Faire!
 
-BAYVIEW MANSE MIDWAY BETWEEN NAPA & SAN FRANCISCO
+EXAMPLE LISTING NAME
 
 Entire home/apt
 
@@ -638,17 +788,22 @@ GUEST PAID
             guest_count: None,
         };
         // The modification arrives later (higher internalDate) but is listed first.
-        let picked = pick_latest_times(vec![
-            (1_789_600_000_000, modified.clone()),
-            (1_789_500_000_000, original),
-        ])
+        let picked = resolve_times(
+            vec![
+                (1_789_600_000_000, modified.clone()),
+                (1_789_500_000_000, original),
+            ],
+            Vec::new(),
+            "15:00",
+            "10:00",
+        )
         .unwrap();
         assert_eq!(picked.checkin_time, modified.checkin_time);
         assert_eq!(picked.checkout_time, modified.checkout_time);
     }
 
     #[test]
-    fn test_pick_latest_times_empty_is_none() {
-        assert!(pick_latest_times(vec![]).is_none());
+    fn test_resolve_times_empty_is_none() {
+        assert!(resolve_times(Vec::new(), Vec::new(), "15:00", "10:00").is_none());
     }
 }

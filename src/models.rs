@@ -40,6 +40,12 @@ pub struct Config {
     pub gmail_client_id: String,
     pub gmail_client_secret: String,
     pub gmail_refresh_token: String,
+    /// Address the owner sends check-in/checkout commands from. Empty disables commands.
+    pub command_sender: String,
+    /// Cloudflare KV (filled by the mail Worker). All three must be set to use it.
+    pub cf_account_id: String,
+    pub cf_kv_namespace_id: String,
+    pub cf_api_token: String,
 }
 
 impl Config {
@@ -98,6 +104,13 @@ impl Config {
             gmail_client_id: std::env::var("GMAIL_CLIENT_ID").unwrap_or_default(),
             gmail_client_secret: std::env::var("GMAIL_CLIENT_SECRET").unwrap_or_default(),
             gmail_refresh_token: std::env::var("GMAIL_REFRESH_TOKEN").unwrap_or_default(),
+            command_sender: std::env::var("COMMAND_SENDER")
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase(),
+            cf_account_id: std::env::var("CF_ACCOUNT_ID").unwrap_or_default(),
+            cf_kv_namespace_id: std::env::var("CF_KV_NAMESPACE_ID").unwrap_or_default(),
+            cf_api_token: std::env::var("CF_API_TOKEN").unwrap_or_default(),
         })
     }
 }

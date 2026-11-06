@@ -2,7 +2,7 @@ use crate::buffer::cleaning_buffer_for;
 use crate::google::BookingSync;
 use crate::models::CalendarEvent;
 use crate::tz::{format_local, local_to_utc, LOCAL_TZ};
-use crate::{gmail, google, ics, models::Config};
+use crate::{google, ics, mailbox, models::Config};
 use std::collections::HashSet;
 
 fn fmt_range(event: &CalendarEvent) -> String {
@@ -45,28 +45,24 @@ pub async fn sync_command(
         &config.checkout_time,
     )?;
 
-    // If Gmail is configured, look up per-reservation check-in/checkout times
-    let gmail_configured = !config.gmail_client_id.is_empty()
-        && !config.gmail_client_secret.is_empty()
-        && !config.gmail_refresh_token.is_empty();
+    // Per-reservation check-in/checkout times from reminder emails and owner
+    // commands. Mail comes from Cloudflare KV and/or Gmail, whichever is configured.
+    let res_ids: Vec<String> = events.iter().map(|e| e.reservation_id.clone()).collect();
 
-    // Reservations whose times came from a reminder email this run. Only these
+    // Reservations whose times came from a reminder or command this run. Only these
     // may update existing calendar events; default times never overwrite one.
     let mut reminder_times: HashSet<String> = HashSet::new();
 
-    if gmail_configured {
-        tracing::info!("Gmail configured — looking up per-reservation times");
-        let res_ids: Vec<String> = events.iter().map(|e| e.reservation_id.clone()).collect();
-
-        match gmail::fetch_reservation_times(
-            &config.gmail_client_id,
-            &config.gmail_client_secret,
-            &config.gmail_refresh_token,
-            &res_ids,
-        )
-        .await
-        {
-            Ok(times_map) => {
+    match mailbox::collect(config, &res_ids).await {
+        Ok(mails) => {
+            let times_map = mailbox::reservation_times(
+                &mails,
+                &res_ids,
+                &config.command_sender,
+                &config.checkin_time,
+                &config.checkout_time,
+            );
+            {
                 for event in &mut events {
                     if let Some(times) = times_map.get(&event.reservation_id) {
                         if let Some(guests) = &times.guest_count {
@@ -104,35 +100,24 @@ pub async fn sync_command(
                     }
                 }
             }
-            Err(e) => {
-                tracing::warn!("Gmail lookup failed, using default times: {}", e);
-            }
         }
-    } else {
-        tracing::debug!("Gmail not configured — using default check-in/checkout times");
+        Err(e) => {
+            tracing::warn!("Mail lookup failed, using default times: {}", e);
+        }
     }
 
     // Cancellation emails are authoritative, so never (re)create a booking they
     // name, even if the ICS feed still lists it. Otherwise each run would recreate
     // the event and buffer that the cancel step then deletes.
-    if gmail_configured {
-        match gmail::fetch_cancelled_reservation_ids(
-            &config.gmail_client_id,
-            &config.gmail_client_secret,
-            &config.gmail_refresh_token,
-            super::cancel::CANCELLATION_LOOKBACK_DAYS,
-        )
-        .await
-        {
-            Ok(cancelled) => events.retain(|e| {
-                let keep = !cancelled.contains(&e.reservation_id);
-                if !keep {
-                    tracing::info!("{}: cancelled by email, not syncing", e.reservation_id);
-                }
-                keep
-            }),
-            Err(e) => crate::fail!("✗ Could not read cancellation emails: {}", e),
-        }
+    match mailbox::cancelled_ids(config).await {
+        Ok(cancelled) => events.retain(|e| {
+            let keep = !cancelled.contains(&e.reservation_id);
+            if !keep {
+                tracing::info!("{}: cancelled by email, not syncing", e.reservation_id);
+            }
+            keep
+        }),
+        Err(e) => crate::fail!("✗ Could not read cancellation emails: {}", e),
     }
 
     for conflict in crate::buffer::turnover_conflicts(&events, config.cleaning_buffer_hours) {
