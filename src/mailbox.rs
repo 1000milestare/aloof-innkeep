@@ -209,7 +209,11 @@ pub fn reservation_times(
     default_checkin: &str,
     default_checkout: &str,
 ) -> HashMap<String, ReservationTimes> {
-    let owner = command_sender.trim().to_lowercase();
+    let owners: Vec<String> = command_sender
+        .split(',')
+        .map(bare_address)
+        .filter(|s| !s.is_empty())
+        .collect();
     let mut out = HashMap::new();
 
     for rid in reservation_ids {
@@ -221,7 +225,7 @@ pub fn reservation_times(
                 if let Some(times) = gmail::parse_times_from_email(&mail.text, rid) {
                     reminders.push((mail.received_ms, times));
                 }
-            } else if !owner.is_empty() && mail.from == owner {
+            } else if owners.contains(&mail.from) {
                 commands.extend(
                     gmail::parse_time_commands(&mail.text, rid)
                         .into_iter()

@@ -95,8 +95,13 @@ pub async fn fetch_mail_for_reservations(
 
     for rid in reservation_ids {
         out.extend(search_messages(&client, &access_token, "from:automated@airbnb.com", rid).await);
-        if !command_sender.is_empty() {
-            let query = format!("from:{}", command_sender);
+        let senders: Vec<String> = command_sender
+            .split(',')
+            .map(bare_address)
+            .filter(|s| !s.is_empty())
+            .collect();
+        if !senders.is_empty() {
+            let query = format!("from:({})", senders.join(" OR "));
             out.extend(search_messages(&client, &access_token, &query, rid).await);
         }
     }

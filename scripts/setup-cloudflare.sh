@@ -4,7 +4,7 @@
 # No personal values are stored in the repo. You enter them when prompted, or
 # export them first:
 #   CLOUDFLARE_ACCOUNT_ID   your Cloudflare account id
-#   OWNER_EMAIL             the address you send commands from
+#   OWNER_EMAILS            comma-separated addresses you send commands from
 #   FORWARD_EMAIL           the verified address that receives a human copy
 #
 # Secrets are read with hidden input and passed on stdin, never written to disk.
@@ -32,7 +32,7 @@ REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 echo "Repo: $REPO"
 
 ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-$(ask "Cloudflare account id")}"
-OWNER_EMAIL="${OWNER_EMAIL:-$(ask "Owner address (commands are accepted from this sender)")}"
+OWNER_EMAILS="${OWNER_EMAILS:-$(ask "Owner addresses, comma-separated (commands are accepted from these)")}"
 FORWARD_EMAIL="${FORWARD_EMAIL:-$(ask "Verified address for the human copy")}"
 export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT_ID"
 
@@ -66,17 +66,17 @@ sed "s/REPLACE_WITH_KV_NAMESPACE_ID/$ns_id/" "$TEMPLATE" > "$LOCAL_TOML"
 echo "Wrote worker/wrangler.local.toml (git-ignored)"
 
 say "Worker secrets"
-printf '%s' "$OWNER_EMAIL" | npx --yes wrangler secret put OWNER_SENDER --config "$LOCAL_TOML" >/dev/null
+printf '%s' "$OWNER_EMAILS" | npx --yes wrangler secret put OWNER_SENDERS --config "$LOCAL_TOML" >/dev/null
 printf '%s' "$FORWARD_EMAIL" | npx --yes wrangler secret put FORWARD_TO --config "$LOCAL_TOML" >/dev/null
 echo "Needs: fine-grained GitHub token, Actions read/write on $REPO."
 gh_token="$(ask_secret "GitHub token for the Worker")"
 printf '%s' "$gh_token" | npx --yes wrangler secret put GITHUB_TOKEN --config "$LOCAL_TOML" >/dev/null
-echo "Secrets stored in the Worker: OWNER_SENDER, FORWARD_TO, GITHUB_TOKEN"
+echo "Secrets stored in the Worker: OWNER_SENDERS, FORWARD_TO, GITHUB_TOKEN"
 
 say "GitHub repo settings ($REPO)"
 gh variable set CF_ACCOUNT_ID --repo "$REPO" --body "$ACCOUNT_ID"
 gh variable set CF_KV_NAMESPACE_ID --repo "$REPO" --body "$ns_id"
-gh variable set COMMAND_SENDER --repo "$REPO" --body "$OWNER_EMAIL"
+gh variable set COMMAND_SENDER --repo "$REPO" --body "$OWNER_EMAILS"
 echo "Variables set: CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, COMMAND_SENDER"
 
 echo "Needs: Cloudflare API token with Account > Workers KV Storage > Read"
