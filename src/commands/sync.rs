@@ -4,6 +4,13 @@ use crate::models::CalendarEvent;
 use crate::tz::{format_local, local_to_utc, LOCAL_TZ};
 use crate::{google, ics, mailbox, models::Config};
 use std::collections::HashSet;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+
+/// Calendar events written at once. Each event is independent; the limit keeps the
+/// Google API calls well inside its per-user quota.
+const CONCURRENT_EVENTS: usize = 4;
 
 fn fmt_range(event: &CalendarEvent) -> String {
     format!(
@@ -53,7 +60,14 @@ pub async fn sync_command(
     // may update existing calendar events; default times never overwrite one.
     let mut reminder_times: HashSet<String> = HashSet::new();
 
-    match mailbox::collect(config, &res_ids).await {
+    // Stored mail is read once and shared by the times lookup and the cancellation check.
+    let kv_mail = mailbox::load_kv(config).await;
+
+    let mails = match &kv_mail {
+        Ok(kv) => mailbox::collect_with(config, &res_ids, kv).await,
+        Err(e) => Err(anyhow::anyhow!("{}", e)),
+    };
+    match mails {
         Ok(mails) => {
             let times_map = mailbox::reservation_times(
                 &mails,
@@ -109,7 +123,11 @@ pub async fn sync_command(
     // Cancellation emails are authoritative, so never (re)create a booking they
     // name, even if the ICS feed still lists it. Otherwise each run would recreate
     // the event and buffer that the cancel step then deletes.
-    match mailbox::cancelled_ids(config).await {
+    let cancelled = match &kv_mail {
+        Ok(kv) => mailbox::cancelled_ids_with(config, kv).await,
+        Err(e) => Err(anyhow::anyhow!("{}", e)),
+    };
+    match cancelled {
         Ok(cancelled) => events.retain(|e| {
             let keep = !cancelled.contains(&e.reservation_id);
             if !keep {
@@ -143,35 +161,63 @@ pub async fn sync_command(
     )
     .await?;
 
-    for (i, event) in events.iter().enumerate() {
-        let label = format!("[{}/{}] {}", i + 1, events.len(), event.reservation_id);
-        let authoritative = reminder_times.contains(&event.reservation_id);
-        match google_client.sync_booking_event(event, authoritative).await {
-            Ok(BookingSync::Created) => tracing::info!("{}: ✓ created {}", label, fmt_range(event)),
-            Ok(BookingSync::Updated) => tracing::info!("{}: ✓ updated {}", label, fmt_range(event)),
-            Ok(BookingSync::Unchanged) => tracing::debug!("{}: unchanged", label),
-            Err(e) => crate::fail!("{}: ✗ {}", label, e),
-        }
+    // Events are independent, so write them a few at a time. Each event still does its
+    // calendar write before its cleaning buffer. A failure is counted, not fatal.
+    let total = events.len();
+    let google_client = Arc::new(google_client);
+    let permits = Arc::new(Semaphore::new(CONCURRENT_EVENTS));
+    let mut tasks = JoinSet::new();
 
-        if let (Some(airbnb_id), Some(buffer)) = (
-            event.booking_id.as_deref(),
-            cleaning_buffer_for(event, config.cleaning_buffer_hours),
-        ) {
+    for (i, event) in events.into_iter().enumerate() {
+        let google_client = Arc::clone(&google_client);
+        let permits = Arc::clone(&permits);
+        let authoritative = reminder_times.contains(&event.reservation_id);
+        let hours = config.cleaning_buffer_hours;
+
+        tasks.spawn(async move {
+            let _permit = permits.acquire_owned().await;
+            let label = format!("[{}/{}] {}", i + 1, total, event.reservation_id);
+
             match google_client
-                .upsert_cleaning_buffer(airbnb_id, &buffer)
+                .sync_booking_event(&event, authoritative)
                 .await
             {
-                Ok(_) => tracing::info!(
-                    "{}: ✓ cleaning buffer until {}",
-                    label,
-                    format_local(&buffer.checkout, "%Y-%m-%d %H:%M %Z")
-                ),
-                Err(e) => crate::fail!("{}: ✗ cleaning buffer: {}", label, e),
+                Ok(BookingSync::Created) => {
+                    tracing::info!("{}: ✓ created {}", label, fmt_range(&event))
+                }
+                Ok(BookingSync::Updated) => {
+                    tracing::info!("{}: ✓ updated {}", label, fmt_range(&event))
+                }
+                Ok(BookingSync::Unchanged) => tracing::debug!("{}: unchanged", label),
+                Err(e) => crate::fail!("{}: ✗ {}", label, e),
             }
+
+            if let (Some(airbnb_id), Some(buffer)) = (
+                event.booking_id.as_deref(),
+                cleaning_buffer_for(&event, hours),
+            ) {
+                match google_client
+                    .upsert_cleaning_buffer(airbnb_id, &buffer)
+                    .await
+                {
+                    Ok(_) => tracing::info!(
+                        "{}: ✓ cleaning buffer until {}",
+                        label,
+                        format_local(&buffer.checkout, "%Y-%m-%d %H:%M %Z")
+                    ),
+                    Err(e) => crate::fail!("{}: ✗ cleaning buffer: {}", label, e),
+                }
+            }
+        });
+    }
+
+    while let Some(joined) = tasks.join_next().await {
+        if let Err(e) = joined {
+            crate::fail!("✗ Event task failed: {}", e);
         }
     }
 
-    tracing::info!("✓ Sync complete — {} events processed", events.len());
+    tracing::info!("✓ Sync complete — {} events processed", total);
     Ok(())
 }
 
