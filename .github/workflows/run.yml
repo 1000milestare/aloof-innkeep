@@ -11,6 +11,9 @@ concurrency:
   group: scheduled-sync
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   sync:
     name: Run Sync
@@ -18,12 +21,33 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Use the binary built from main by release.yml. If there is no release yet, or
+      # the download fails, the steps below build it here instead.
+      - name: Download release binary
+        id: download
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p bin
+          gh release download latest --repo "$GITHUB_REPOSITORY" \
+            --pattern aloof-innkeep --dir bin --clobber
+          chmod +x bin/aloof-innkeep
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Fall back to building
+        if: steps.download.outcome == 'failure'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        if: steps.download.outcome == 'failure'
+        uses: Swatinem/rust-cache@v2
 
       - name: Build release
-        run: cargo build --release
+        if: steps.download.outcome == 'failure'
+        run: |
+          cargo build --release
+          mkdir -p bin
+          cp target/release/aloof-innkeep bin/
 
       - name: Run full sync
         env:
@@ -41,4 +65,4 @@ jobs:
           CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
           CLEANING_BUFFER_HOURS: ${{ secrets.CLEANING_BUFFER_HOURS || '3' }}
           LOG_LEVEL: info
-        run: ./target/release/aloof-innkeep
+        run: ./bin/aloof-innkeep
