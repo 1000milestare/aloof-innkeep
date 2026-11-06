@@ -6,20 +6,29 @@ on:
   pull_request:
     branches: [ main ]
 
+# Cancel superseded runs on the same branch or PR.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-debug
+
       - name: Check formatting
         run: cargo fmt -- --check
-      
+
       - name: Run clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -28,25 +37,29 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      
+
       - uses: dtolnay/rust-toolchain@stable
-      
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-debug
+
+      # Covers the event_filter tests too, so no separate run is needed.
       - name: Run tests
         run: cargo test --verbose
-      
-      - name: Run event_filter tests
-        run: cargo test event_filter -- --nocapture --test-threads=1
 
   build:
-    name: Build
+    name: Build release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      
+
       - uses: dtolnay/rust-toolchain@stable
-      
-      - name: Build debug
-        run: cargo build --verbose
-      
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-release
+
+      # The debug build is already compiled by the test job.
       - name: Build release
         run: cargo build --release --verbose
