@@ -1,0 +1,13 @@
+name = "aloof-innkeep-commands"
+main = "src/index.ts"
+compatibility_date = "2026-01-01"
+
+# Set these in the Cloudflare dashboard or here. Secrets are not stored in this file:
+#   wrangler secret put GITHUB_TOKEN
+[vars]
+ALLOWED_SENDER = "REPLACE_ME@gmail.com"
+ALLOWED_DKIM_DOMAIN = "gmail.com"
+FORWARD_TO = "REPLACE_ME@gmail.com" # must be a verified destination in Email Routing
+GITHUB_REPO = "1000milestare/aloof-innkeep"
+GITHUB_WORKFLOW = "run.yml"
+GITHUB_REF = "main"

@@ -40,6 +40,8 @@ pub struct Config {
     pub gmail_client_id: String,
     pub gmail_client_secret: String,
     pub gmail_refresh_token: String,
+    /// Address the owner sends check-in/checkout commands from. Empty disables commands.
+    pub command_sender: String,
 }
 
 impl Config {
@@ -98,6 +100,10 @@ impl Config {
             gmail_client_id: std::env::var("GMAIL_CLIENT_ID").unwrap_or_default(),
             gmail_client_secret: std::env::var("GMAIL_CLIENT_SECRET").unwrap_or_default(),
             gmail_refresh_token: std::env::var("GMAIL_REFRESH_TOKEN").unwrap_or_default(),
+            command_sender: std::env::var("COMMAND_SENDER")
+                .unwrap_or_default()
+                .trim()
+                .to_lowercase(),
         })
     }
 }

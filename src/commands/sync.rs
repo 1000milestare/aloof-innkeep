@@ -62,7 +62,10 @@ pub async fn sync_command(
             &config.gmail_client_id,
             &config.gmail_client_secret,
             &config.gmail_refresh_token,
+            &config.command_sender,
             &res_ids,
+            &config.checkin_time,
+            &config.checkout_time,
         )
         .await
         {
