@@ -1,6 +1,7 @@
 // Cloudflare Email Worker: a minimal relay. For mail from the owner or from
-// Airbnb's automated sender, it stores the raw message in KV and starts the
-// GitHub Actions sync. It does not parse mail; the Rust sync does that.
+// Airbnb's automated sender, it stores the raw message in KV, forwards a copy
+// for humans, and starts the GitHub Actions sync. It does not parse mail; the
+// Rust sync does that.
 
 export interface Env {
   MAIL: KVNamespace; // KV binding (wrangler.toml)
@@ -12,6 +13,7 @@ export interface Env {
   GITHUB_WORKFLOW: string;
   GITHUB_REF: string;
   GITHUB_TOKEN: string; // secret: fine-grained, Actions: write on the repo
+  FORWARD_TO: string; // verified Cloudflare destination (human copy), e.g. geoff@chirgwin.com
 }
 
 const RETENTION_SECONDS = 60 * 60 * 24 * 120;
@@ -89,6 +91,14 @@ export default {
     const raw = await new Response(message.raw).text();
     const key = `mail:${Date.now()}:${crypto.randomUUID()}`;
     await env.MAIL.put(key, raw, { expirationTtl: RETENTION_SECONDS });
+
+    // Human copy. A routing rule has one action, so the forward that used to be
+    // the rule's action now lives here. Failure is logged and doesn't affect the store.
+    try {
+      await message.forward(env.FORWARD_TO);
+    } catch (err) {
+      console.error(`Forward failed: ${err}`);
+    }
 
     ctx.waitUntil(
       dispatchWorkflow(env).then(async (res) => {
