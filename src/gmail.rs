@@ -1,7 +1,7 @@
+use crate::mailbox::{bare_address, Mail};
 use anyhow::{anyhow, Result};
 use base64::{engine::general_purpose::URL_SAFE, Engine};
 use regex::Regex;
-use std::collections::HashMap;
 
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const GMAIL_API: &str = "https://gmail.googleapis.com/gmail/v1/users/me";
@@ -80,63 +80,27 @@ async fn get_access_token(
         .ok_or_else(|| anyhow!("No access_token in response"))
 }
 
-/// Search Gmail for Airbnb reservation emails and extract check-in/checkout times.
-/// Returns a map of reservation_id -> ReservationTimes.
-pub async fn fetch_reservation_times(
+/// Airbnb reminder emails and owner command emails for these reservations, as
+/// `Mail`. Parsing happens in `mailbox`, shared with the KV store.
+pub async fn fetch_mail_for_reservations(
     client_id: &str,
     client_secret: &str,
     refresh_token: &str,
     command_sender: &str,
     reservation_ids: &[String],
-    default_checkin: &str,
-    default_checkout: &str,
-) -> Result<HashMap<String, ReservationTimes>> {
+) -> Result<Vec<Mail>> {
     let access_token = get_access_token(client_id, client_secret, refresh_token).await?;
     let client = reqwest::Client::new();
-    let mut results = HashMap::new();
+    let mut out = Vec::new();
 
     for rid in reservation_ids {
-        tracing::debug!("Searching Gmail for reservation {}", rid);
-
-        let mut reminders: Vec<(i64, ReservationTimes)> = Vec::new();
-        for (ts, text) in
-            search_messages(&client, &access_token, "from:automated@airbnb.com", rid).await
-        {
-            if let Some(times) = parse_times_from_email(&text, rid) {
-                reminders.push((ts, times));
-            }
-        }
-
-        // Owner command emails. Only mail from the configured sender counts, and an
-        // empty sender disables commands (the search would otherwise match anyone).
-        let mut commands: Vec<(i64, TimeCommand)> = Vec::new();
+        out.extend(search_messages(&client, &access_token, "from:automated@airbnb.com", rid).await);
         if !command_sender.is_empty() {
             let query = format!("from:{}", command_sender);
-            for (ts, text) in search_messages(&client, &access_token, &query, rid).await {
-                commands.extend(parse_time_commands(&text, rid).into_iter().map(|c| (ts, c)));
-            }
-        }
-
-        match resolve_times(reminders, commands, default_checkin, default_checkout) {
-            Some(times) => {
-                tracing::info!(
-                    "Found times for {}: check-in {}, checkout {}",
-                    rid,
-                    times.checkin_time,
-                    times.checkout_time
-                );
-                results.insert(rid.clone(), times);
-            }
-            None => tracing::debug!("Could not extract times for {} from any email", rid),
+            out.extend(search_messages(&client, &access_token, &query, rid).await);
         }
     }
-
-    tracing::info!(
-        "Gmail: found check-in/out times for {}/{} reservations",
-        results.len(),
-        reservation_ids.len()
-    );
-    Ok(results)
+    Ok(out)
 }
 
 /// Reservation code from an Airbnb cancellation subject, e.g.
@@ -223,15 +187,14 @@ pub async fn fetch_cancelled_reservation_ids(
     Ok(ids)
 }
 
-/// Plaintext bodies (with internalDate) of up to 5 messages matching `prefix` plus
-/// the reservation ID. Errors are logged and yield nothing, so a failed lookup for
-/// one reservation falls back to defaults rather than failing the whole run.
+/// Messages matching `prefix` plus the reservation ID, as `Mail`. Errors are logged
+/// and yield nothing, so one failed lookup falls back to defaults, not a failed run.
 async fn search_messages(
     client: &reqwest::Client,
     token: &str,
     prefix: &str,
     rid: &str,
-) -> Vec<(i64, String)> {
+) -> Vec<Mail> {
     let query = format!("{} {}", prefix, rid);
     let search_url = format!(
         "{}/messages?q={}&maxResults=5",
@@ -274,13 +237,33 @@ async fn search_messages(
         if text.is_empty() {
             continue;
         }
-        let ts = msg["internalDate"]
-            .as_str()
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or(0);
-        out.push((ts, text));
+        out.push(Mail {
+            from: bare_address(&gmail_header(&msg, "From")),
+            subject: gmail_header(&msg, "Subject"),
+            received_ms: msg["internalDate"]
+                .as_str()
+                .and_then(|s| s.parse::<i64>().ok())
+                .unwrap_or(0),
+            text,
+        });
     }
     out
+}
+
+/// A header value from a Gmail API message payload.
+fn gmail_header(msg: &serde_json::Value, name: &str) -> String {
+    msg["payload"]["headers"]
+        .as_array()
+        .and_then(|hs| {
+            hs.iter().find(|h| {
+                h["name"]
+                    .as_str()
+                    .is_some_and(|n| n.eq_ignore_ascii_case(name))
+            })
+        })
+        .and_then(|h| h["value"].as_str())
+        .unwrap_or("")
+        .to_string()
 }
 
 /// A check-in or checkout change written by the owner, e.g.
@@ -333,7 +316,7 @@ fn parse_clock(s: &str) -> Option<String> {
 /// takes its newest value from either source, so a command sent after a reminder
 /// wins, and a later reminder wins over an older command. A field with no source
 /// uses the config default. The guest count comes from the newest reminder.
-fn resolve_times(
+pub(crate) fn resolve_times(
     reminders: Vec<(i64, ReservationTimes)>,
     commands: Vec<(i64, TimeCommand)>,
     default_checkin: &str,
@@ -429,7 +412,7 @@ fn decode_part(part: &serde_json::Value) -> Option<String> {
 /// Fri, Apr 17   Sun, Apr 19
 /// 3:00 PM       10:00 AM
 /// ```
-fn parse_times_from_email(body: &str, reservation_id: &str) -> Option<ReservationTimes> {
+pub(crate) fn parse_times_from_email(body: &str, reservation_id: &str) -> Option<ReservationTimes> {
     // Verify this email is about the right reservation
     if !body.contains(reservation_id) {
         return None;

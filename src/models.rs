@@ -42,6 +42,10 @@ pub struct Config {
     pub gmail_refresh_token: String,
     /// Address the owner sends check-in/checkout commands from. Empty disables commands.
     pub command_sender: String,
+    /// Cloudflare KV (filled by the mail Worker). All three must be set to use it.
+    pub cf_account_id: String,
+    pub cf_kv_namespace_id: String,
+    pub cf_api_token: String,
 }
 
 impl Config {
@@ -104,6 +108,9 @@ impl Config {
                 .unwrap_or_default()
                 .trim()
                 .to_lowercase(),
+            cf_account_id: std::env::var("CF_ACCOUNT_ID").unwrap_or_default(),
+            cf_kv_namespace_id: std::env::var("CF_KV_NAMESPACE_ID").unwrap_or_default(),
+            cf_api_token: std::env::var("CF_API_TOKEN").unwrap_or_default(),
         })
     }
 }

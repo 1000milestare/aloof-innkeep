@@ -17,7 +17,7 @@
 use crate::models::CalendarEvent;
 use crate::reconcile::plan_cancellations;
 use crate::tz::format_local;
-use crate::{gmail, google, ics, models::Config, seam};
+use crate::{google, ics, mailbox, models::Config, seam};
 use std::collections::HashSet;
 
 /// How far back cancellation emails are searched.
@@ -64,32 +64,18 @@ pub async fn cancel_command(
     // Cancellation emails are the source of truth (there is no Airbnb API). Only
     // calendar events are candidates, and list_bookable_events has already dropped
     // stays that started before today, so this only acts on today-or-later stays.
-    let gmail_configured = !config.gmail_client_id.is_empty()
-        && !config.gmail_client_secret.is_empty()
-        && !config.gmail_refresh_token.is_empty();
-    if gmail_configured {
-        match gmail::fetch_cancelled_reservation_ids(
-            &config.gmail_client_id,
-            &config.gmail_client_secret,
-            &config.gmail_refresh_token,
-            CANCELLATION_LOOKBACK_DAYS,
-        )
-        .await
-        {
-            Ok(codes) => {
-                for event in &gcal_events {
-                    if let Some(bid) = event.booking_id.as_deref() {
-                        if codes.contains(bid) && seen.insert(bid.to_string()) {
-                            tracing::info!("{} - cancellation confirmed by email", bid);
-                            cancelled.push(event);
-                        }
+    match mailbox::cancelled_ids(config).await {
+        Ok(codes) => {
+            for event in &gcal_events {
+                if let Some(bid) = event.booking_id.as_deref() {
+                    if codes.contains(bid) && seen.insert(bid.to_string()) {
+                        tracing::info!("{} - cancellation confirmed by email", bid);
+                        cancelled.push(event);
                     }
                 }
             }
-            Err(e) => crate::fail!("✗ Could not read cancellation emails: {}", e),
         }
-    } else {
-        tracing::warn!("Gmail not configured - cancellations rely on the ICS feed only");
+        Err(e) => crate::fail!("✗ Could not read cancellation emails: {}", e),
     }
 
     if cancelled.is_empty() {

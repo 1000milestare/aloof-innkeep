@@ -5,6 +5,7 @@ mod gmail;
 mod google;
 mod ics;
 mod logger;
+mod mailbox;
 mod models;
 mod reconcile;
 mod seam;
