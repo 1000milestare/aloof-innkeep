@@ -44,6 +44,17 @@ impl GoogleCalendarClient {
     /// - Have "reserved" (case-insensitive) in the title OR have a phone number in the description
     /// - Start today or later (by local date)
     pub async fn list_bookable_events(&self) -> Result<Vec<CalendarEvent>> {
+        self.list_events(false).await
+    }
+
+    /// Like `list_bookable_events`, but also keeps stays already in progress (they
+    /// started before today and check out today or later). Used for lock codes so a
+    /// time change reaches the code of a guest who is already staying.
+    pub async fn list_code_events(&self) -> Result<Vec<CalendarEvent>> {
+        self.list_events(true).await
+    }
+
+    async fn list_events(&self, include_in_progress: bool) -> Result<Vec<CalendarEvent>> {
         tracing::info!("Fetching events from Google Calendar");
 
         let client = reqwest::Client::new();
@@ -119,8 +130,9 @@ impl GoogleCalendarClient {
                 continue;
             };
 
-            // Server-side timeMin should handle this, but guard locally too
-            if start_date < today {
+            // Server-side timeMin returns stays that end today or later. Plain bookable
+            // events must also start today or later; code events may already be in progress.
+            if !include_in_progress && start_date < today {
                 continue;
             }
 
@@ -158,6 +170,10 @@ impl GoogleCalendarClient {
                 tracing::warn!("Could not parse end time for \"{}\": {}", title, end_str);
                 continue;
             };
+
+            if include_in_progress && end_utc.with_timezone(&Local).date_naive() < today {
+                continue;
+            }
 
             let id = item["id"].as_str().unwrap_or("unknown").to_string();
             let airbnb_id = event_filter::extract_airbnb_id(&description);

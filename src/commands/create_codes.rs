@@ -32,8 +32,12 @@ pub async fn create_codes_command(
     )
     .await?;
 
-    let events = google_client.list_bookable_events().await?;
-    tracing::info!("Processing {} bookable future events", events.len());
+    // Includes stays in progress, so a changed checkout time reaches their code.
+    let events = google_client.list_code_events().await?;
+    tracing::info!(
+        "Processing {} bookable and in-progress events",
+        events.len()
+    );
 
     let seam_client =
         seam::SeamClient::new(config.seam_api_key.clone(), config.seam_device_id.clone());
@@ -79,6 +83,15 @@ pub async fn create_codes_command(
             }
 
             seam::CodeAction::Create => {
+                // A stay already underway with no code is not given a new one here.
+                let today = chrono::Local::now().date_naive();
+                if event.checkin.with_timezone(&chrono::Local).date_naive() < today {
+                    tracing::warn!(
+                        "{} - In progress with no code on device, not creating",
+                        label
+                    );
+                    continue;
+                }
                 if dry_run {
                     tracing::info!(
                         "{} - Would create code: {} ({})",
