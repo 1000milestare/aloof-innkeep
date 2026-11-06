@@ -2,18 +2,17 @@ name = "aloof-innkeep-mail"
 main = "src/index.ts"
 compatibility_date = "2026-01-01"
 
-# Secrets are not stored here:
-#   wrangler secret put GITHUB_TOKEN
+# No personal values are stored here. Set these as secrets (scripts/setup-cloudflare.sh does it):
+#   OWNER_SENDER, FORWARD_TO, GITHUB_TOKEN
+# The KV id is substituted at deploy time from CF_KV_NAMESPACE_ID (see .github/workflows/worker.yml).
 [[kv_namespaces]]
 binding = "MAIL"
 id = "REPLACE_WITH_KV_NAMESPACE_ID"
 
 [vars]
-OWNER_SENDER = "gchirgwin@gmail.com"
 OWNER_DKIM_DOMAIN = "gmail.com"
 AIRBNB_SENDER = "automated@airbnb.com"
 AIRBNB_DKIM_DOMAIN = "airbnb.com"
 GITHUB_REPO = "1000milestare/aloof-innkeep"
 GITHUB_WORKFLOW = "run.yml"
 GITHUB_REF = "main"
-FORWARD_TO = "geoff@chirgwin.com" # must be a verified destination in Email Routing

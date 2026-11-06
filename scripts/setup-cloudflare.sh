@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # Set up the Cloudflare mail Worker and the GitHub settings that use it.
 #
-# Automates what the CLIs can do. Steps that need a browser or a secret you
-# create yourself are prompted for, or printed at the end (see MANUAL below).
+# No personal values are stored in the repo. You enter them when prompted, or
+# export them first:
+#   CLOUDFLARE_ACCOUNT_ID   your Cloudflare account id
+#   OWNER_EMAIL             the address you send commands from
+#   FORWARD_EMAIL           the verified address that receives a human copy
+#
 # Secrets are read with hidden input and passed on stdin, never written to disk.
+# Generated files (worker/wrangler.local.toml) are git-ignored.
 #
 # Usage (from the repo root):   bash scripts/setup-cloudflare.sh
 
 set -euo pipefail
 
-REPO="1000milestare/aloof-innkeep"
-ACCOUNT_ID="db453fc9a747485e5e0c71ea596004f8"
-COMMAND_SENDER="gchirgwin@gmail.com"
-WORKER_DIR="$(cd "$(dirname "$0")/../worker" && pwd)"
-TOML="$WORKER_DIR/wrangler.toml"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+WORKER_DIR="$ROOT/worker"
+TEMPLATE="$WORKER_DIR/wrangler.toml"
+LOCAL_TOML="$WORKER_DIR/wrangler.local.toml"
 
 say() { printf '\n==> %s\n' "$*"; }
+ask() { local v; read -rp "$1: " v; printf '%s' "$v"; }
 ask_secret() { local v; read -rsp "$1: " v; echo >&2; printf '%s' "$v"; }
 
 say "Checking tools"
@@ -23,7 +28,16 @@ command -v gh >/dev/null || { echo "Install the GitHub CLI (gh) first."; exit 1;
 command -v npx >/dev/null || { echo "Install Node.js (npx) first."; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "Run 'gh auth login' first."; exit 1; }
 
+REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+echo "Repo: $REPO"
+
+ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-$(ask "Cloudflare account id")}"
+OWNER_EMAIL="${OWNER_EMAIL:-$(ask "Owner address (commands are accepted from this sender)")}"
+FORWARD_EMAIL="${FORWARD_EMAIL:-$(ask "Verified address for the human copy")}"
+export CLOUDFLARE_ACCOUNT_ID="$ACCOUNT_ID"
+
 cd "$WORKER_DIR"
+
 say "Cloudflare login"
 if ! npx --yes wrangler whoami 2>/dev/null | grep -q "$ACCOUNT_ID"; then
   echo "Not logged in to account $ACCOUNT_ID. Opening browser login..."
@@ -31,64 +45,65 @@ if ! npx --yes wrangler whoami 2>/dev/null | grep -q "$ACCOUNT_ID"; then
   npx --yes wrangler whoami | grep -q "$ACCOUNT_ID" || {
     echo "Logged in, but not to account $ACCOUNT_ID. Check the account in the browser and rerun."; exit 1; }
 fi
-echo "Logged in to $ACCOUNT_ID"
+echo "Logged in to the account"
 
 say "KV namespace"
-if grep -q "REPLACE_WITH_KV_NAMESPACE_ID" "$TOML"; then
+ns_id=""
+if [ -f "$LOCAL_TOML" ]; then
+  ns_id="$(grep -oE 'id = "[0-9a-f]{32}"' "$LOCAL_TOML" | grep -oE '[0-9a-f]{32}' | head -1 || true)"
+fi
+if [ -z "$ns_id" ]; then
   out="$(npx --yes wrangler kv namespace create MAIL 2>&1 || true)"
   ns_id="$(printf '%s' "$out" | grep -oE '[0-9a-f]{32}' | head -1 || true)"
   if [ -z "$ns_id" ]; then
     echo "$out"
-    echo "Could not read the namespace id. If MAIL already exists, copy its id from:"
+    echo "Could not read the namespace id. If MAIL already exists, find its id with:"
     echo "  npx wrangler kv namespace list"
-    read -rp "Paste the namespace id: " ns_id
+    ns_id="$(ask "Namespace id")"
   fi
-  sed -i.bak "s/REPLACE_WITH_KV_NAMESPACE_ID/$ns_id/" "$TOML" && rm -f "$TOML.bak"
-  echo "Namespace id: $ns_id (written to wrangler.toml)"
-else
-  ns_id="$(grep -oE 'id = "[0-9a-f]{32}"' "$TOML" | grep -oE '[0-9a-f]{32}' | head -1)"
-  echo "Already set: $ns_id"
 fi
+sed "s/REPLACE_WITH_KV_NAMESPACE_ID/$ns_id/" "$TEMPLATE" > "$LOCAL_TOML"
+echo "Wrote worker/wrangler.local.toml (git-ignored)"
 
-say "Worker secret GITHUB_TOKEN"
+say "Worker secrets"
+printf '%s' "$OWNER_EMAIL" | npx --yes wrangler secret put OWNER_SENDER --config "$LOCAL_TOML" >/dev/null
+printf '%s' "$FORWARD_EMAIL" | npx --yes wrangler secret put FORWARD_TO --config "$LOCAL_TOML" >/dev/null
 echo "Needs: fine-grained GitHub token, Actions read/write on $REPO."
-gh_token="$(ask_secret "GitHub token")"
-printf '%s' "$gh_token" | npx --yes wrangler secret put GITHUB_TOKEN >/dev/null
-echo "Stored in the Worker."
+gh_token="$(ask_secret "GitHub token for the Worker")"
+printf '%s' "$gh_token" | npx --yes wrangler secret put GITHUB_TOKEN --config "$LOCAL_TOML" >/dev/null
+echo "Secrets stored in the Worker: OWNER_SENDER, FORWARD_TO, GITHUB_TOKEN"
 
 say "GitHub repo settings ($REPO)"
 gh variable set CF_ACCOUNT_ID --repo "$REPO" --body "$ACCOUNT_ID"
 gh variable set CF_KV_NAMESPACE_ID --repo "$REPO" --body "$ns_id"
-gh variable set COMMAND_SENDER --repo "$REPO" --body "$COMMAND_SENDER"
+gh variable set COMMAND_SENDER --repo "$REPO" --body "$OWNER_EMAIL"
 echo "Variables set: CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, COMMAND_SENDER"
 
 echo "Needs: Cloudflare API token with Account > Workers KV Storage > Read"
-echo "       and Account > Workers Scripts > Edit (create it at My Profile > API Tokens)."
+echo "       and Account > Workers Scripts > Edit (My Profile > API Tokens)."
 cf_token="$(ask_secret "Cloudflare API token")"
 printf '%s' "$cf_token" | gh secret set CF_API_TOKEN --repo "$REPO"
 echo "Secret set: CF_API_TOKEN"
 
 say "Deploying the Worker"
-npx --yes wrangler deploy
+npx --yes wrangler deploy --config "$LOCAL_TOML"
 
 cat <<MANUAL
 
 ==> MANUAL steps (dashboard only)
 
-1. Confirm geoff@chirgwin.com is a verified destination:
-   Cloudflare dashboard > prytzhouse.com > Email > Email Routing > Destination addresses.
+1. Confirm the forward address is a verified destination:
+   Cloudflare dashboard > your domain > Email > Email Routing > Destination addresses.
 
-2. Point the routing rule at the Worker:
-   Email > Email Routing > Routing rules > edit the beauty@prytzhouse.com rule.
+2. Point the command address's routing rule at the Worker:
+   Email > Email Routing > Routing rules > edit the rule for the command address.
    Set the action to "Send to a Worker", pick aloof-innkeep-mail, save.
    Leave the catch-all alone.
 
 3. Test:
-   - Forward an Airbnb email to beauty@prytzhouse.com; check it reaches geoff@chirgwin.com.
+   - Forward an Airbnb email to the command address; check the human copy arrives.
    - Email Routing > Activity log shows the delivery.
-   - npx wrangler tail (in worker/) shows "Workflow dispatched".
-   - Send: checkout HMFWJXSQRM 13:00   (use a real reservation code) and check the next run.
+   - npx wrangler tail --config worker/wrangler.local.toml shows "Workflow dispatched".
+   - Send a command such as "checkout <real reservation code> 13:00" and check the next run.
    - Mail from any other address should be rejected.
-
-Done. Merge PR #24 to deploy the Worker from GitHub.
 MANUAL

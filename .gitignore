@@ -10,3 +10,4 @@ service-account-key.json
 Cargo.lock
 
 node_modules/
+worker/wrangler.local.toml

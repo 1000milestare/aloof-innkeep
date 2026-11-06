@@ -104,7 +104,7 @@ pub async fn fetch_mail_for_reservations(
 }
 
 /// Reservation code from an Airbnb cancellation subject, e.g.
-/// "Canceled: Reservation HMFWJXSQRM for Sep 25–28, 2025" → "HMFWJXSQRM".
+/// "Canceled: Reservation HMEXAMPLE01 for Sep 25–28, 2025" → "HMEXAMPLE01".
 /// Returns None for anything else (reminders, confirmations, other Airbnb mail).
 pub fn parse_cancellation_subject(subject: &str) -> Option<String> {
     let re = Regex::new(r"^Canceled: Reservation ([A-Z0-9]{8,12}) for ").ok()?;
@@ -267,7 +267,7 @@ fn gmail_header(msg: &serde_json::Value, name: &str) -> String {
 }
 
 /// A check-in or checkout change written by the owner, e.g.
-/// "checkout HMFWJXSQRM 13:00" or "checkin HMFWJXSQRM 3:00 PM".
+/// "checkout HMEXAMPLE01 13:00" or "checkin HMEXAMPLE01 3:00 PM".
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TimeCommand {
     CheckIn(String),  // "HH:MM"
@@ -681,7 +681,7 @@ Test Guest
 
 Hi Host, we're coming for the Example Faire!
 
-BAYVIEW MANSE MIDWAY BETWEEN NAPA & SAN FRANCISCO
+EXAMPLE LISTING NAME
 
 Entire home/apt
 

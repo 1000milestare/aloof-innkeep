@@ -21,9 +21,14 @@ jobs:
         working-directory: worker
       - run: npm test
         working-directory: worker
+      - name: Write deploy config (KV id comes from a repo variable, not git)
+        run: sed "s/REPLACE_WITH_KV_NAMESPACE_ID/${KV_ID}/" wrangler.toml > wrangler.deploy.toml
+        working-directory: worker
+        env:
+          KV_ID: ${{ vars.CF_KV_NAMESPACE_ID }}
       - uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CF_API_TOKEN }}
           accountId: ${{ vars.CF_ACCOUNT_ID }}
           workingDirectory: worker
-          command: deploy
+          command: deploy --config wrangler.deploy.toml

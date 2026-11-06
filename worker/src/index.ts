@@ -5,7 +5,7 @@
 
 export interface Env {
   MAIL: KVNamespace; // KV binding (wrangler.toml)
-  OWNER_SENDER: string; // owner's address, lowercase
+  OWNER_SENDER: string; // owner's address, lowercase; set as a secret
   OWNER_DKIM_DOMAIN: string; // e.g. "gmail.com"
   AIRBNB_SENDER: string; // "automated@airbnb.com"
   AIRBNB_DKIM_DOMAIN: string; // "airbnb.com"
@@ -13,7 +13,7 @@ export interface Env {
   GITHUB_WORKFLOW: string;
   GITHUB_REF: string;
   GITHUB_TOKEN: string; // secret: fine-grained, Actions: write on the repo
-  FORWARD_TO: string; // verified Cloudflare destination (human copy), e.g. geoff@chirgwin.com
+  FORWARD_TO: string; // verified Cloudflare destination (human copy), set as a secret
 }
 
 const RETENTION_SECONDS = 60 * 60 * 24 * 120;
