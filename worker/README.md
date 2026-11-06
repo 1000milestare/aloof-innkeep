@@ -17,7 +17,7 @@ must stay the routing action for the command address. Every message is forwarded
    Actions: write on `1000milestare/aloof-innkeep`.
 4. **Deploy:** push to `main` (the `worker.yml` workflow deploys), or run `npx wrangler deploy`.
    Deploys need the repo secret `CF_API_TOKEN` and the variable `CF_ACCOUNT_ID`.
-5. **Sync side:** the workflow reads the same KV namespace. Set the repo variables
+5. **Sync side:** the workflow reads the same KV namespace. Set the org secrets
    `CF_ACCOUNT_ID` and `CF_KV_NAMESPACE_ID`, and the secret `CF_API_TOKEN` (needs KV read).
 
 ## Command format

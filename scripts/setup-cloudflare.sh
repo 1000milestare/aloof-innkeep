@@ -30,7 +30,7 @@ gh auth status >/dev/null 2>&1 || { echo "Run 'gh auth login' first."; exit 1; }
 
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
 ORG="${REPO%%/*}"
-echo "Repo: $REPO (settings are stored at the org: $ORG)"
+echo "Repo: $REPO (secrets are stored at org level: $ORG)"
 
 ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-$(ask "Cloudflare account id")}"
 OWNER_EMAILS="${OWNER_EMAILS:-$(ask "Owner addresses, comma-separated (commands are accepted from these)")}"
@@ -74,17 +74,17 @@ gh_token="$(ask_secret "GitHub token for the Worker")"
 printf '%s' "$gh_token" | npx --yes wrangler secret put GITHUB_TOKEN --config "$LOCAL_TOML" >/dev/null
 echo "Secrets stored in the Worker: OWNER_SENDERS, FORWARD_TO, GITHUB_TOKEN"
 
-say "Org settings ($ORG), shared with $REPO only"
-gh variable set CF_ACCOUNT_ID --org "$ORG" --visibility selected --repos "$REPO" --body "$ACCOUNT_ID"
-gh variable set CF_KV_NAMESPACE_ID --org "$ORG" --visibility selected --repos "$REPO" --body "$ns_id"
-gh variable set COMMAND_SENDER --org "$ORG" --visibility selected --repos "$REPO" --body "$OWNER_EMAILS"
-echo "Variables set: CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, COMMAND_SENDER"
+say "Org secrets ($ORG), shared with $REPO only"
+gh secret set CF_ACCOUNT_ID --org "$ORG" --visibility selected --repos "$REPO" <<<"$ACCOUNT_ID"
+gh secret set CF_KV_NAMESPACE_ID --org "$ORG" --visibility selected --repos "$REPO" <<<"$ns_id"
+gh secret set COMMAND_SENDER --org "$ORG" --visibility selected --repos "$REPO" <<<"$OWNER_EMAILS"
+echo "Secrets set: CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, COMMAND_SENDER"
 
 echo "Needs: Cloudflare API token with Account > Workers KV Storage > Read"
 echo "       and Account > Workers Scripts > Edit (My Profile > API Tokens)."
 cf_token="$(ask_secret "Cloudflare API token")"
 printf '%s' "$cf_token" | gh secret set CF_API_TOKEN --org "$ORG" --visibility selected --repos "$REPO"
-echo "Secret set: CF_API_TOKEN (org)"
+echo "Secret set: CF_API_TOKEN"
 
 say "Deploying the Worker"
 npx --yes wrangler deploy --config "$LOCAL_TOML"
