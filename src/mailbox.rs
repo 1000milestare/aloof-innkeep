@@ -142,17 +142,27 @@ pub async fn fetch_kv_mail(cfg: &KvConfig) -> Result<Vec<Mail>> {
     Ok(mails)
 }
 
-/// Mail from every configured source for these reservations.
-pub async fn collect(config: &Config, reservation_ids: &[String]) -> Result<Vec<Mail>> {
-    let mut mails = Vec::new();
-    if let Some(kv) = KvConfig::from_config(config) {
-        let stored = fetch_kv_mail(&kv).await?;
-        tracing::info!(
-            "Read {} stored mail message(s) from Cloudflare KV",
-            stored.len()
-        );
-        mails.extend(stored);
-    }
+/// Stored mail from Cloudflare KV, read once per run. Empty if KV isn't configured.
+pub async fn load_kv(config: &Config) -> Result<Vec<Mail>> {
+    let Some(kv) = KvConfig::from_config(config) else {
+        return Ok(Vec::new());
+    };
+    let stored = fetch_kv_mail(&kv).await?;
+    tracing::info!(
+        "Read {} stored mail message(s) from Cloudflare KV",
+        stored.len()
+    );
+    Ok(stored)
+}
+
+/// Mail from every configured source for these reservations. `kv` is mail already
+/// read by `load_kv`, so a run reads KV only once.
+pub async fn collect_with(
+    config: &Config,
+    reservation_ids: &[String],
+    kv: &[Mail],
+) -> Result<Vec<Mail>> {
+    let mut mails = kv.to_vec();
     if gmail_configured(config) {
         mails.extend(
             gmail::fetch_mail_for_reservations(
@@ -169,12 +179,9 @@ pub async fn collect(config: &Config, reservation_ids: &[String]) -> Result<Vec<
 }
 
 /// Reservation codes named by cancellation emails from every configured source.
-pub async fn cancelled_ids(config: &Config) -> Result<BTreeSet<String>> {
-    let mut ids = BTreeSet::new();
-    if let Some(kv) = KvConfig::from_config(config) {
-        let mails = fetch_kv_mail(&kv).await?;
-        ids.extend(cancelled_codes(&mails));
-    }
+/// `kv` is mail already read by `load_kv`.
+pub async fn cancelled_ids_with(config: &Config, kv: &[Mail]) -> Result<BTreeSet<String>> {
+    let mut ids = cancelled_codes(kv);
     if gmail_configured(config) {
         ids.extend(
             gmail::fetch_cancelled_reservation_ids(
@@ -187,6 +194,12 @@ pub async fn cancelled_ids(config: &Config) -> Result<BTreeSet<String>> {
         );
     }
     Ok(ids)
+}
+
+/// Reservation codes named by cancellation emails, reading KV itself.
+pub async fn cancelled_ids(config: &Config) -> Result<BTreeSet<String>> {
+    let kv = load_kv(config).await?;
+    cancelled_ids_with(config, &kv).await
 }
 
 pub fn gmail_configured(config: &Config) -> bool {
