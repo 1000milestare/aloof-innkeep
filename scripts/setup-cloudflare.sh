@@ -29,7 +29,8 @@ command -v npx >/dev/null || { echo "Install Node.js (npx) first."; exit 1; }
 gh auth status >/dev/null 2>&1 || { echo "Run 'gh auth login' first."; exit 1; }
 
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
-echo "Repo: $REPO"
+ORG="${REPO%%/*}"
+echo "Repo: $REPO (settings are stored at the org: $ORG)"
 
 ACCOUNT_ID="${CLOUDFLARE_ACCOUNT_ID:-$(ask "Cloudflare account id")}"
 OWNER_EMAILS="${OWNER_EMAILS:-$(ask "Owner addresses, comma-separated (commands are accepted from these)")}"
@@ -73,17 +74,17 @@ gh_token="$(ask_secret "GitHub token for the Worker")"
 printf '%s' "$gh_token" | npx --yes wrangler secret put GITHUB_TOKEN --config "$LOCAL_TOML" >/dev/null
 echo "Secrets stored in the Worker: OWNER_SENDERS, FORWARD_TO, GITHUB_TOKEN"
 
-say "GitHub repo settings ($REPO)"
-gh variable set CF_ACCOUNT_ID --repo "$REPO" --body "$ACCOUNT_ID"
-gh variable set CF_KV_NAMESPACE_ID --repo "$REPO" --body "$ns_id"
-gh variable set COMMAND_SENDER --repo "$REPO" --body "$OWNER_EMAILS"
+say "Org settings ($ORG), shared with $REPO only"
+gh variable set CF_ACCOUNT_ID --org "$ORG" --visibility selected --repos "$REPO" --body "$ACCOUNT_ID"
+gh variable set CF_KV_NAMESPACE_ID --org "$ORG" --visibility selected --repos "$REPO" --body "$ns_id"
+gh variable set COMMAND_SENDER --org "$ORG" --visibility selected --repos "$REPO" --body "$OWNER_EMAILS"
 echo "Variables set: CF_ACCOUNT_ID, CF_KV_NAMESPACE_ID, COMMAND_SENDER"
 
 echo "Needs: Cloudflare API token with Account > Workers KV Storage > Read"
 echo "       and Account > Workers Scripts > Edit (My Profile > API Tokens)."
 cf_token="$(ask_secret "Cloudflare API token")"
-printf '%s' "$cf_token" | gh secret set CF_API_TOKEN --repo "$REPO"
-echo "Secret set: CF_API_TOKEN"
+printf '%s' "$cf_token" | gh secret set CF_API_TOKEN --org "$ORG" --visibility selected --repos "$REPO"
+echo "Secret set: CF_API_TOKEN (org)"
 
 say "Deploying the Worker"
 npx --yes wrangler deploy --config "$LOCAL_TOML"
