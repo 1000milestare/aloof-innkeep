@@ -1,19 +1,18 @@
-// Cloudflare Email Worker: a minimal relay. For mail from the owner or from
-// Airbnb's automated sender, it stores the raw message in KV, forwards a copy
-// for humans, and starts the GitHub Actions sync. It does not parse mail; the
-// Rust sync does that.
+// Cloudflare Email Worker. Every message is forwarded to a human copy. Only mail
+// from a trusted sender, whose DKIM signature is aligned with the From domain, is
+// stored in KV and starts the GitHub Actions sync. The Rust sync does all parsing.
+//
+// Nothing here bounces mail: a message we don't act on is still delivered.
 
 export interface Env {
   MAIL: KVNamespace; // KV binding (wrangler.toml)
-  OWNER_SENDER: string; // owner's address, lowercase; set as a secret
-  OWNER_DKIM_DOMAIN: string; // e.g. "gmail.com"
+  OWNER_SENDERS: string; // secret: comma-separated owner addresses
+  FORWARD_TO: string; // secret: verified destination for the human copy
   AIRBNB_SENDER: string; // "automated@airbnb.com"
-  AIRBNB_DKIM_DOMAIN: string; // "airbnb.com"
   GITHUB_REPO: string;
   GITHUB_WORKFLOW: string;
   GITHUB_REF: string;
   GITHUB_TOKEN: string; // secret: fine-grained, Actions: write on the repo
-  FORWARD_TO: string; // verified Cloudflare destination (human copy), set as a secret
 }
 
 const RETENTION_SECONDS = 60 * 60 * 24 * 120;
@@ -25,34 +24,55 @@ export function bareAddress(value: string): string {
   return (match ? match[1] : value).trim().toLowerCase();
 }
 
-/** True only if the first Authentication-Results header (added by Cloudflare) shows DKIM pass for the domain. */
-export function dkimPassesFor(authResults: string | null, domain: string): boolean {
+/** Comma-separated list of addresses, normalised. Empty entries are dropped. */
+export function parseList(value: string | undefined): string[] {
+  return (value ?? "")
+    .split(",")
+    .map((s) => bareAddress(s))
+    .filter((s) => s.includes("@"));
+}
+
+/**
+ * True if some DKIM pass in Cloudflare's Authentication-Results is signed by the
+ * sender's domain or a subdomain of it (Airbnb signs as email.airbnb.com).
+ * Only the first Authentication-Results header is read; it is added by Cloudflare.
+ */
+export function dkimAligned(authResults: string | null, senderDomain: string): boolean {
   if (!authResults) return false;
-  const lower = authResults.toLowerCase();
-  return lower.includes("dkim=pass") && lower.includes(`header.d=${domain.toLowerCase()}`);
+  const domain = senderDomain.toLowerCase();
+  const pattern = /dkim=pass[^;]*?header\.[di]=@?([a-z0-9.-]+)/g;
+  for (const match of authResults.toLowerCase().matchAll(pattern)) {
+    const signer = match[1];
+    if (signer === domain || signer.endsWith(`.${domain}`)) return true;
+  }
+  return false;
 }
 
 export type Kind = "owner" | "airbnb";
 
-/** Classify a message as owner mail, Airbnb automated mail, or neither (refused). */
+/**
+ * Identify a trusted sender from the From header. The envelope sender is not used:
+ * for Airbnb it is a bounce address, not the From address.
+ */
 export function classify(
-  envelopeFrom: string,
   headerFrom: string | null,
-  firstAuthResults: string | null,
-  env: Pick<Env, "OWNER_SENDER" | "OWNER_DKIM_DOMAIN" | "AIRBNB_SENDER" | "AIRBNB_DKIM_DOMAIN">,
+  authResults: string | null,
+  owners: string[],
+  airbnbSender: string,
 ): { ok: true; kind: Kind } | { ok: false; reason: string } {
-  const envelope = bareAddress(envelopeFrom);
-  const header = headerFrom ? bareAddress(headerFrom) : "";
+  const sender = headerFrom ? bareAddress(headerFrom) : "";
+  const domain = sender.split("@")[1] ?? "";
+  if (!sender || !domain) return { ok: false, reason: "no usable From header" };
 
-  if (envelope === env.OWNER_SENDER.toLowerCase() && header === envelope) {
-    if (dkimPassesFor(firstAuthResults, env.OWNER_DKIM_DOMAIN)) return { ok: true, kind: "owner" };
-    return { ok: false, reason: "owner DKIM did not pass" };
+  let kind: Kind;
+  if (sender === airbnbSender.toLowerCase()) kind = "airbnb";
+  else if (owners.includes(sender)) kind = "owner";
+  else return { ok: false, reason: `sender not on the list: ${sender}` };
+
+  if (!dkimAligned(authResults, domain)) {
+    return { ok: false, reason: `DKIM not aligned with ${domain}` };
   }
-  if (envelope === env.AIRBNB_SENDER.toLowerCase() && header === envelope) {
-    if (dkimPassesFor(firstAuthResults, env.AIRBNB_DKIM_DOMAIN)) return { ok: true, kind: "airbnb" };
-    return { ok: false, reason: "Airbnb DKIM did not pass" };
-  }
-  return { ok: false, reason: "sender not recognised" };
+  return { ok: true, kind };
 }
 
 async function dispatchWorkflow(env: Env): Promise<Response> {
@@ -73,37 +93,46 @@ async function dispatchWorkflow(env: Env): Promise<Response> {
 export default {
   async email(message: ForwardableEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
     const check = classify(
-      message.from,
       message.headers.get("from"),
       message.headers.get("authentication-results"), // first one only: added by Cloudflare
-      env,
+      parseList(env.OWNER_SENDERS),
+      env.AIRBNB_SENDER,
     );
-    if (!check.ok) {
-      console.warn(`Refused mail: ${check.reason}`);
-      message.setReject("Not accepted");
-      return;
-    }
-    if (message.rawSize > MAX_RAW_BYTES) {
-      message.setReject("Message too large");
-      return;
+
+    // Store and dispatch only for trusted mail. Errors are logged, never thrown.
+    let stored = false;
+    if (check.ok) {
+      try {
+        if (message.rawSize > MAX_RAW_BYTES) {
+          console.warn("Trusted mail too large to store; not acted on");
+        } else {
+          const raw = await new Response(message.raw).text();
+          const key = `mail:${Date.now()}:${crypto.randomUUID()}`;
+          await env.MAIL.put(key, raw, { expirationTtl: RETENTION_SECONDS });
+          stored = true;
+        }
+      } catch (err) {
+        console.error(`Store failed: ${err}`);
+      }
+    } else {
+      console.log(`Not acted on (still forwarded): ${check.reason}`);
     }
 
-    const raw = await new Response(message.raw).text();
-    const key = `mail:${Date.now()}:${crypto.randomUUID()}`;
-    await env.MAIL.put(key, raw, { expirationTtl: RETENTION_SECONDS });
-
-    // Human copy. A routing rule has one action, so the forward that used to be
-    // the rule's action now lives here. Failure is logged and doesn't affect the store.
+    // Human copy, for every sender.
     try {
       await message.forward(env.FORWARD_TO);
     } catch (err) {
       console.error(`Forward failed: ${err}`);
     }
 
-    ctx.waitUntil(
-      dispatchWorkflow(env).then(async (res) => {
-        if (!res.ok) console.error(`Workflow dispatch failed: ${res.status} ${await res.text()}`);
-      }),
-    );
+    if (stored) {
+      ctx.waitUntil(
+        dispatchWorkflow(env)
+          .then(async (res) => {
+            if (!res.ok) console.error(`Dispatch failed: ${res.status} ${await res.text()}`);
+          })
+          .catch((err) => console.error(`Dispatch error: ${err}`)),
+      );
+    }
   },
 };
