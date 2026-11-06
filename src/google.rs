@@ -253,26 +253,63 @@ impl GoogleCalendarClient {
             .to_string())
     }
 
-    pub async fn create_event(&self, event: &CalendarEvent) -> Result<String> {
-        tracing::info!(
-            "Creating calendar event for reservation: {}",
-            event.reservation_id
-        );
-
+    /// Bring the booking event in line with the desired state: create it if
+    /// missing, otherwise patch whatever has drifted.
+    ///
+    /// `times_authoritative` is true only when the desired times came from a
+    /// reservation reminder email. Default (config) times must never overwrite
+    /// an existing event, since they may be replacing a reminder-derived time
+    /// that was applied on an earlier run.
+    pub async fn sync_booking_event(
+        &self,
+        event: &CalendarEvent,
+        times_authoritative: bool,
+    ) -> Result<BookingSync> {
         let ical_uid = format!("{}@airbnb-sync.local", event.reservation_id);
-        if let Some(existing) = self.find_event_by_ical_uid(&ical_uid).await? {
-            tracing::info!("Event {} already exists, skipping", event.reservation_id);
-            return Ok(existing["id"].as_str().unwrap_or("existing").to_string());
-        }
 
-        self.insert_event(
-            &event.title,
-            &event.description,
-            event.checkin,
-            event.checkout,
-            &ical_uid,
-        )
-        .await
+        let Some(existing) = self.find_event_by_ical_uid(&ical_uid).await? else {
+            self.insert_event(
+                &event.title,
+                &event.description,
+                event.checkin,
+                event.checkout,
+                &ical_uid,
+            )
+            .await?;
+            return Ok(BookingSync::Created);
+        };
+
+        let Some(body) = booking_update_body(&existing, event, times_authoritative) else {
+            return Ok(BookingSync::Unchanged);
+        };
+
+        let id = existing["id"].as_str().unwrap_or("").to_string();
+        tracing::info!(
+            "Updating booking event {} ({})",
+            event.reservation_id,
+            body.keys().cloned().collect::<Vec<_>>().join(", ")
+        );
+        let url = format!(
+            "https://www.googleapis.com/calendar/v3/calendars/{}/events/{}",
+            urlencoding::encode(&self.calendar_id),
+            urlencoding::encode(&id),
+        );
+        let response = reqwest::Client::new()
+            .patch(&url)
+            .bearer_auth(&self.access_token)
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await.unwrap_or_default();
+            return Err(anyhow!(
+                "Failed to update event {}: {}",
+                event.reservation_id,
+                error_text
+            ));
+        }
+        Ok(BookingSync::Updated)
     }
 
     /// Create or align the post-checkout cleaning buffer for one booking. The
@@ -372,6 +409,60 @@ impl GoogleCalendarClient {
             status,
             text
         ))
+    }
+}
+
+/// What `sync_booking_event` did for one reservation.
+#[derive(Debug, PartialEq, Eq)]
+pub enum BookingSync {
+    Created,
+    Updated,
+    Unchanged,
+}
+
+/// Build the PATCH body needed to bring an existing booking event in line with
+/// `desired`, or `None` if nothing needs changing.
+///
+/// Times are compared and patched only when `times_authoritative` is set.
+/// The guest line is appended if missing, but an existing one is never
+/// rewritten, so manual edits to the description survive.
+fn booking_update_body(
+    existing: &serde_json::Value,
+    desired: &CalendarEvent,
+    times_authoritative: bool,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut body = serde_json::Map::new();
+
+    if times_authoritative {
+        if !time_matches(&existing["start"], desired.checkin) {
+            body.insert("start".into(), time_body(desired.checkin));
+        }
+        if !time_matches(&existing["end"], desired.checkout) {
+            body.insert("end".into(), time_body(desired.checkout));
+        }
+    }
+
+    if let Some(guest_line) = desired
+        .description
+        .lines()
+        .find(|l| l.starts_with("Guests:"))
+    {
+        // Stored descriptions can hold literal \n sequences, so unescape before checking.
+        let current = unescape_ics_text(existing["description"].as_str().unwrap_or(""));
+        if !current.lines().any(|l| l.starts_with("Guests:")) {
+            let new_description = if current.is_empty() {
+                guest_line.to_string()
+            } else {
+                format!("{}\n{}", current, guest_line)
+            };
+            body.insert("description".into(), json!(new_description));
+        }
+    }
+
+    if body.is_empty() {
+        None
+    } else {
+        Some(body)
     }
 }
 
@@ -483,4 +574,94 @@ async fn exchange_jwt_for_token(jwt: &str) -> Result<String> {
         .as_str()
         .ok_or_else(|| anyhow!("Missing access_token in response"))
         .map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn at(day: u32, hour: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 11, day, hour, 0, 0).unwrap()
+    }
+
+    fn desired(
+        checkin: DateTime<Utc>,
+        checkout: DateTime<Utc>,
+        description: &str,
+    ) -> CalendarEvent {
+        CalendarEvent {
+            title: "Reserved: TEST".into(),
+            description: description.into(),
+            reservation_id: "HMTEST00001".into(),
+            booking_id: Some("HMTEST00001".into()),
+            checkin,
+            checkout,
+        }
+    }
+
+    /// A stored event as the Calendar API returns it.
+    fn stored(start: DateTime<Utc>, end: DateTime<Utc>, description: &str) -> serde_json::Value {
+        json!({
+            "id": "gcal-1",
+            "description": description,
+            "start": time_body(start),
+            "end": time_body(end),
+        })
+    }
+
+    #[test]
+    fn unchanged_event_needs_no_patch() {
+        let d = desired(at(2, 23), at(5, 18), "Reservation URL: x\nGuests: 2 adults");
+        let s = stored(at(2, 23), at(5, 18), "Reservation URL: x\nGuests: 2 adults");
+        assert!(booking_update_body(&s, &d, true).is_none());
+    }
+
+    #[test]
+    fn later_checkout_from_reminder_patches_end_only() {
+        let d = desired(at(2, 23), at(5, 20), "Reservation URL: x");
+        let s = stored(at(2, 23), at(5, 18), "Reservation URL: x");
+        let body = booking_update_body(&s, &d, true).unwrap();
+        assert_eq!(body.len(), 1);
+        assert!(body.contains_key("end"));
+        assert_eq!(body["end"]["dateTime"], json!(at(5, 20).to_rfc3339()));
+    }
+
+    #[test]
+    fn default_times_never_overwrite_an_existing_event() {
+        // Not from a reminder: the stored (possibly reminder-derived) times stay.
+        let d = desired(at(2, 23), at(5, 18), "Reservation URL: x");
+        let s = stored(at(2, 22), at(5, 20), "Reservation URL: x");
+        assert!(booking_update_body(&s, &d, false).is_none());
+    }
+
+    #[test]
+    fn missing_guest_line_is_appended_once() {
+        let d = desired(at(2, 23), at(5, 18), "Reservation URL: x\nGuests: 3 adults");
+        let s = stored(at(2, 23), at(5, 18), "Reservation URL: x");
+        let body = booking_update_body(&s, &d, true).unwrap();
+        assert_eq!(
+            body["description"],
+            json!("Reservation URL: x\nGuests: 3 adults")
+        );
+    }
+
+    #[test]
+    fn escaped_stored_guest_line_is_recognised() {
+        // The API can hand back literal \n sequences; that must not read as "no guest line".
+        let d = desired(at(2, 23), at(5, 18), "Reservation URL: x\nGuests: 3 adults");
+        let s = stored(
+            at(2, 23),
+            at(5, 18),
+            "Reservation URL: x\\nGuests: 3 adults",
+        );
+        assert!(booking_update_body(&s, &d, true).is_none());
+    }
+
+    #[test]
+    fn existing_guest_line_is_not_rewritten() {
+        let d = desired(at(2, 23), at(5, 18), "Guests: 4 adults");
+        let s = stored(at(2, 23), at(5, 18), "Guests: 2 adults");
+        assert!(booking_update_body(&s, &d, true).is_none());
+    }
 }
