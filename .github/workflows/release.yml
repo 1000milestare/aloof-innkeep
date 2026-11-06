@@ -1,0 +1,48 @@
+name: Release binary
+
+# Builds the sync binary from main and publishes it as the rolling "latest" release.
+# Scheduled Sync downloads that binary instead of compiling on every run.
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "Cargo.toml", "Cargo.lock", ".github/workflows/release.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-binary
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Publish as the latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          cp target/release/aloof-innkeep aloof-innkeep
+          notes="Built from commit $SHA"
+          if gh release view latest --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload latest aloof-innkeep --clobber --repo "$REPO"
+            gh release edit latest --notes "$notes" --repo "$REPO"
+          else
+            gh release create latest aloof-innkeep --title latest --notes "$notes" \
+              --latest --target "$SHA" --repo "$REPO"
+          fi
