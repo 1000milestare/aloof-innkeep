@@ -1,17 +1,27 @@
-//! Remove calendar events and lock codes for reservations that have dropped out
-//! of the ICS feed (cancellations).
+//! Remove calendar events and lock codes for cancelled reservations.
+//!
+//! A reservation counts as cancelled when either:
+//! - Airbnb cancellation emails name it (the source of truth), or
+//! - it has dropped out of the ICS feed (`plan_cancellations`).
 //!
 //! Safety:
-//! - only calendar events carrying an Airbnb reservation ID are candidates
+//! - only calendar events carrying an Airbnb reservation ID are candidates, and
+//!   only stays starting today or later (list_bookable_events enforces this)
 //! - only the lock code named after that same reservation is deleted; other
 //!   codes on the device (owner, cleaner) are never touched
 //! - the code is deleted first; if that fails the calendar event is kept so the
 //!   next run retries
-//! - `plan_cancellations` refuses to act on an empty feed or a large batch
+//! - the feed path is refused on an empty feed or a large batch; email-confirmed
+//!   cancellations are not subject to that cap
 
+use crate::models::CalendarEvent;
 use crate::reconcile::plan_cancellations;
 use crate::tz::format_local;
-use crate::{google, ics, models::Config, seam};
+use crate::{gmail, google, ics, models::Config, seam};
+use std::collections::HashSet;
+
+/// How far back cancellation emails are searched.
+pub const CANCELLATION_LOOKBACK_DAYS: u32 = 90;
 
 pub async fn cancel_command(
     config: &Config,
@@ -37,14 +47,50 @@ pub async fn cancel_command(
     .await?;
     let gcal_events = google_client.list_bookable_events().await?;
 
-    let cancelled = match plan_cancellations(&expected, &gcal_events) {
+    // Feed-based cancellations. A refused guard (empty feed, too many) only stops
+    // this path; email-confirmed cancellations below are still processed.
+    let mut cancelled: Vec<&CalendarEvent> = match plan_cancellations(&expected, &gcal_events) {
         Ok(c) => c,
         Err(guard) => {
-            // Not fatal: later steps in a full run should still go ahead.
-            crate::fail!("✗ Skipping cancellations: {}", guard);
-            return Ok(());
+            crate::fail!("✗ Feed-based cancellations skipped: {}", guard);
+            Vec::new()
         }
     };
+    let mut seen: HashSet<String> = cancelled
+        .iter()
+        .filter_map(|e| e.booking_id.clone())
+        .collect();
+
+    // Cancellation emails are the source of truth (there is no Airbnb API). Only
+    // calendar events are candidates, and list_bookable_events has already dropped
+    // stays that started before today, so this only acts on today-or-later stays.
+    let gmail_configured = !config.gmail_client_id.is_empty()
+        && !config.gmail_client_secret.is_empty()
+        && !config.gmail_refresh_token.is_empty();
+    if gmail_configured {
+        match gmail::fetch_cancelled_reservation_ids(
+            &config.gmail_client_id,
+            &config.gmail_client_secret,
+            &config.gmail_refresh_token,
+            CANCELLATION_LOOKBACK_DAYS,
+        )
+        .await
+        {
+            Ok(codes) => {
+                for event in &gcal_events {
+                    if let Some(bid) = event.booking_id.as_deref() {
+                        if codes.contains(bid) && seen.insert(bid.to_string()) {
+                            tracing::info!("{} - cancellation confirmed by email", bid);
+                            cancelled.push(event);
+                        }
+                    }
+                }
+            }
+            Err(e) => crate::fail!("✗ Could not read cancellation emails: {}", e),
+        }
+    } else {
+        tracing::warn!("Gmail not configured - cancellations rely on the ICS feed only");
+    }
 
     if cancelled.is_empty() {
         tracing::info!("✓ No cancellations");

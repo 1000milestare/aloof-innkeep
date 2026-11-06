@@ -112,6 +112,29 @@ pub async fn sync_command(
         tracing::debug!("Gmail not configured — using default check-in/checkout times");
     }
 
+    // Cancellation emails are authoritative, so never (re)create a booking they
+    // name, even if the ICS feed still lists it. Otherwise each run would recreate
+    // the event and buffer that the cancel step then deletes.
+    if gmail_configured {
+        match gmail::fetch_cancelled_reservation_ids(
+            &config.gmail_client_id,
+            &config.gmail_client_secret,
+            &config.gmail_refresh_token,
+            super::cancel::CANCELLATION_LOOKBACK_DAYS,
+        )
+        .await
+        {
+            Ok(cancelled) => events.retain(|e| {
+                let keep = !cancelled.contains(&e.reservation_id);
+                if !keep {
+                    tracing::info!("{}: cancelled by email, not syncing", e.reservation_id);
+                }
+                keep
+            }),
+            Err(e) => crate::fail!("✗ Could not read cancellation emails: {}", e),
+        }
+    }
+
     for conflict in crate::buffer::turnover_conflicts(&events, config.cleaning_buffer_hours) {
         tracing::warn!("Turnover conflict: {}", conflict);
     }

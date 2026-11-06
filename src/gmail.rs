@@ -185,6 +185,90 @@ pub async fn fetch_reservation_times(
     Ok(results)
 }
 
+/// Reservation code from an Airbnb cancellation subject, e.g.
+/// "Canceled: Reservation HMFWJXSQRM for Sep 25–28, 2025" → "HMFWJXSQRM".
+/// Returns None for anything else (reminders, confirmations, other Airbnb mail).
+pub fn parse_cancellation_subject(subject: &str) -> Option<String> {
+    let re = Regex::new(r"^Canceled: Reservation ([A-Z0-9]{8,12}) for ").ok()?;
+    re.captures(subject.trim())
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_string())
+}
+
+/// Reservation codes named in Airbnb cancellation emails from the last
+/// `lookback_days` days. Emails are the only cancellation signal we can rely on
+/// (there is no Airbnb API), so callers treat each code as a confirmed cancel.
+pub async fn fetch_cancelled_reservation_ids(
+    client_id: &str,
+    client_secret: &str,
+    refresh_token: &str,
+    lookback_days: u32,
+) -> Result<std::collections::BTreeSet<String>> {
+    let access_token = get_access_token(client_id, client_secret, refresh_token).await?;
+    let client = reqwest::Client::new();
+
+    let query = format!(
+        "from:automated@airbnb.com subject:\"Canceled: Reservation\" newer_than:{}d",
+        lookback_days
+    );
+    let search_url = format!(
+        "{}/messages?q={}&maxResults=100",
+        GMAIL_API,
+        urlencoding::encode(&query),
+    );
+    let resp = client
+        .get(&search_url)
+        .bearer_auth(&access_token)
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        let err = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Gmail cancellation search failed: {}", err));
+    }
+
+    let body: serde_json::Value = resp.json().await?;
+    let mut ids = std::collections::BTreeSet::new();
+    let refs = body["messages"].as_array().cloned().unwrap_or_default();
+
+    for msg_ref in &refs {
+        let Some(msg_id) = msg_ref["id"].as_str() else {
+            continue;
+        };
+        // Metadata only: the subject carries the code, and the body (which names
+        // the guest) is never needed or fetched.
+        let url = format!(
+            "{}/messages/{}?format=metadata&metadataHeaders=Subject",
+            GMAIL_API, msg_id
+        );
+        let msg: serde_json::Value = client
+            .get(&url)
+            .bearer_auth(&access_token)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        let subject = msg["payload"]["headers"]
+            .as_array()
+            .and_then(|hs| {
+                hs.iter()
+                    .find(|h| h["name"].as_str() == Some("Subject"))
+                    .and_then(|h| h["value"].as_str())
+            })
+            .unwrap_or("");
+
+        match parse_cancellation_subject(subject) {
+            Some(code) => {
+                tracing::info!("Cancellation email found for {}", code);
+                ids.insert(code);
+            }
+            None => tracing::warn!("Unrecognised cancellation subject, ignoring: {}", subject),
+        }
+    }
+
+    Ok(ids)
+}
+
 /// Choose the most recent set of times. Airbnb sends a new reminder/confirmation
 /// email whenever a reservation's check-in or checkout is modified, so the email
 /// with the newest `internalDate` (milliseconds since epoch) is authoritative.
@@ -349,6 +433,39 @@ fn to_24h(time_str: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cancellation_subject_yields_code() {
+        assert_eq!(
+            parse_cancellation_subject("Canceled: Reservation HMTEST12345 for Sep 25–28, 2025"),
+            Some("HMTEST12345".to_string())
+        );
+    }
+
+    #[test]
+    fn cancellation_subject_across_months_yields_code() {
+        assert_eq!(
+            parse_cancellation_subject("Canceled: Reservation HMTEST67890 for Oct 30–Nov 2, 2026"),
+            Some("HMTEST67890".to_string())
+        );
+    }
+
+    #[test]
+    fn non_cancellation_subjects_are_ignored() {
+        assert_eq!(
+            parse_cancellation_subject("Reservation reminder: Test Guest is coming soon"),
+            None
+        );
+        assert_eq!(
+            parse_cancellation_subject("Reservation confirmed: HMTEST12345"),
+            None
+        );
+        assert_eq!(
+            parse_cancellation_subject("Canceled: Reservation  for Sep 1"),
+            None
+        );
+        assert_eq!(parse_cancellation_subject(""), None);
+    }
 
     #[test]
     fn test_to_24h_pm() {
