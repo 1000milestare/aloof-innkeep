@@ -244,10 +244,21 @@ pub fn reservation_times(
                     reminders.push((mail.received_ms, times));
                 }
             } else if owners.contains(&mail.from) {
-                commands.extend(
-                    gmail::parse_time_commands(&mail.text, rid)
-                        .into_iter()
-                        .map(|c| (mail.received_ms, c)),
+                let found = gmail::parse_time_commands(&mail.text, rid);
+                for c in &found {
+                    tracing::info!(
+                        "{}: command {:?} received at {} ms",
+                        rid,
+                        c,
+                        mail.received_ms
+                    );
+                }
+                commands.extend(found.into_iter().map(|c| (mail.received_ms, c)));
+            } else if !gmail::parse_time_commands(&mail.text, rid).is_empty() {
+                tracing::warn!(
+                    "{}: command ignored, sender not in COMMAND_SENDER ({} configured)",
+                    rid,
+                    owners.len()
                 );
             }
         }
