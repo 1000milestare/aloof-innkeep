@@ -244,7 +244,15 @@ pub fn reservation_times(
                     reminders.push((mail.received_ms, times));
                 }
             } else if owners.contains(&mail.from) {
-                let found = gmail::parse_time_commands(&mail.text, rid);
+                // Only the first check-in and first check-out in one message count, so
+                // a later line (for example one quoted from an earlier message) can't
+                // override the newest instruction at the top.
+                let mut found = gmail::parse_time_commands(&mail.text, rid);
+                let (mut seen_in, mut seen_out) = (false, false);
+                found.retain(|c| match c {
+                    gmail::TimeCommand::CheckIn(_) => !std::mem::replace(&mut seen_in, true),
+                    gmail::TimeCommand::CheckOut(_) => !std::mem::replace(&mut seen_out, true),
+                });
                 for c in &found {
                     tracing::info!(
                         "{}: command {:?} received at {} ms",
@@ -330,6 +338,21 @@ mod tests {
         let out = reservation_times(&mails, &rids, "owner@gmail.com", "15:00", "10:00");
         assert_eq!(out["HMTEST12345"].checkout_time, "13:00");
         assert_eq!(out["HMTEST12345"].checkin_time, "15:00");
+    }
+
+    #[test]
+    fn first_checkout_in_newest_message_wins() {
+        // Same message holds a new instruction on top and an older one below it.
+        let mails = vec![Mail {
+            from: "owner@gmail.com".into(),
+            subject: String::new(),
+            received_ms: 500,
+            text: "checkout HMTEST12345 13:00\n\nOn Sat, you wrote:\ncheckout HMTEST12345 01:00\n"
+                .into(),
+        }];
+        let rids = vec!["HMTEST12345".to_string()];
+        let out = reservation_times(&mails, &rids, "owner@gmail.com", "15:00", "10:00");
+        assert_eq!(out["HMTEST12345"].checkout_time, "13:00");
     }
 
     #[test]
