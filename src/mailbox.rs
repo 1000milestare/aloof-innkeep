@@ -162,18 +162,24 @@ pub async fn collect_with(
     reservation_ids: &[String],
     kv: &[Mail],
 ) -> Result<Vec<Mail>> {
+    // A failing Gmail source is counted but never discards the Cloudflare mail.
     let mut mails = kv.to_vec();
     if gmail_configured(config) {
-        mails.extend(
-            gmail::fetch_mail_for_reservations(
-                &config.gmail_client_id,
-                &config.gmail_client_secret,
-                &config.gmail_refresh_token,
-                &config.command_sender,
-                reservation_ids,
-            )
-            .await?,
-        );
+        match gmail::fetch_mail_for_reservations(
+            &config.gmail_client_id,
+            &config.gmail_client_secret,
+            &config.gmail_refresh_token,
+            &config.command_sender,
+            reservation_ids,
+        )
+        .await
+        {
+            Ok(found) => mails.extend(found),
+            Err(e) => crate::fail!(
+                "✗ Gmail mail lookup failed, using Cloudflare mail only: {}",
+                e
+            ),
+        }
     }
     Ok(mails)
 }
@@ -181,17 +187,23 @@ pub async fn collect_with(
 /// Reservation codes named by cancellation emails from every configured source.
 /// `kv` is mail already read by `load_kv`.
 pub async fn cancelled_ids_with(config: &Config, kv: &[Mail]) -> Result<BTreeSet<String>> {
+    // A failing Gmail source is counted but never drops the Cloudflare cancellations.
     let mut ids = cancelled_codes(kv);
     if gmail_configured(config) {
-        ids.extend(
-            gmail::fetch_cancelled_reservation_ids(
-                &config.gmail_client_id,
-                &config.gmail_client_secret,
-                &config.gmail_refresh_token,
-                crate::commands::cancel::CANCELLATION_LOOKBACK_DAYS,
-            )
-            .await?,
-        );
+        match gmail::fetch_cancelled_reservation_ids(
+            &config.gmail_client_id,
+            &config.gmail_client_secret,
+            &config.gmail_refresh_token,
+            crate::commands::cancel::CANCELLATION_LOOKBACK_DAYS,
+        )
+        .await
+        {
+            Ok(found) => ids.extend(found),
+            Err(e) => crate::fail!(
+                "✗ Gmail cancellation lookup failed, using Cloudflare only: {}",
+                e
+            ),
+        }
     }
     Ok(ids)
 }
